@@ -1,0 +1,35 @@
+\\ plotting.6502 - main RAM's way into the data's bank: the sprites' plotter paged in for it (D9).
+
+\\ Plot a sprite (sprite_plot, in the data's bank), the data's bank paged in for it and the code's back after.
+\\
+\\ Inputs:
+\\     A: the sprite
+\\     sprite_draw.col, sprite_draw.bottom: where it goes
+\\     back: the playfield
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.plot_sprite
+{
+    LDX bankdata:STX &FE30              ; ROMSEL: the data's bank
+    JSR sprite_plot
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    RTS
+}
+
+\\ The roadside objects (draw_objects, in the data's bank), the data's bank paged in for them.
+\\
+\\ Inputs:
+\\     the road's rows; back
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.plot_objects
+{
+    LDX bankdata:STX &FE30              ; ROMSEL: the data's bank
+    JSR draw_objects
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    RTS
+}

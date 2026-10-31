@@ -1,0 +1,922 @@
+\\ car.6502 - the player's car (docs/cpc-logic.md): its gear, speed, steering and drift each loop, how far off
+\\ the road it is, and its frames and places for the plotter. In the code's bank.
+
+SECTION GameVars
+.CarGear                                            ; 0 low, 1 high
+    SKIP 1
+.CarGearWait                            ; loops before a held gear key toggles again, 0-3
+    SKIP 1
+.CarTurbo                               ; loops of turbo left, 60 down
+    SKIP 1
+.CarTurbos                              ; turbos left, 3 a stage, the one running among them
+    SKIP 1
+.CarNag                                 ; loops below speed 120 to the partner's nag (the CPC's &1690)
+    SKIP 1
+.CarSteerR                              ; the steering's velocities, right and left, 0-36
+    SKIP 1
+.CarSteerL
+    SKIP 1
+.CarLump                                ; the drift owed from the last segment, signed, for the
+    SKIP 1                              ; next loop
+.CarDriftRef                            ; the fraction the drift's counted up to
+    SKIP 1
+.CarDriftTicks                          ; and its steps this segment
+    SKIP 1
+.CarTurn                                ; the sprite's turn, 0-2
+    SKIP 1
+.CarLeft                                            ; 1 turning left: the sprite mirrored
+    SKIP 1
+.CarOff                                             ; 0 on the road, 1 partly off, 2 off
+    SKIP 1
+.CarPitch                                           ; 0 flat, 3 uphill, 6 downhill: the sprite's frames on
+    SKIP 1
+.CarSlopeWait                           ; loops to the next slope step, 0-3
+    SKIP 1
+.CarWobble                              ; flips each loop: off the road, the body bumps
+    SKIP 1
+.CarBounce                              ; not 0 while bouncing off something
+    SKIP 1
+.CarBounceSide                          ; 0 shoved left (x up), 1 right, 2 not shoved
+    SKIP 1
+.CarBounceV                             ; the shove, half-pixels a loop
+    SKIP 1
+.CarBounceEnd                           ; the speed it ends below
+    SKIP 2
+.CarSkid                                ; 1 skidding or bouncing: the screech
+    SKIP 1
+.CarScreech                             ; loops of screech left (into HI)
+    SKIP 1
+.CarSkidSound                           ; toggles with each screech: every second one's heard
+    SKIP 1
+.CarSpark                               ; a bounce's loops of sparks left, from 5
+    SKIP 1
+.CarSparkSide                           ; sparks this loop: 0 none, else the bounce's side + 1
+    SKIP 1
+.CarLift                                ; lines the car's drawn higher (pulling in behind, the arrest)
+    SKIP 1
+.CarBounceTurn                          ; this loop's bounce: the sprite at full lock (2), or 1 as it ends
+    SKIP 1
+ENDSECTION
+
+GearLow = 230                           ; the gears' top speeds, without and with a turbo
+GearLowTurbo = 470
+GearHigh = 360
+GearHighTurbo = 695
+GearHighFrom = 220                      ; high gear below this: crawls up
+SpeedCap = 511
+XMin = &48                              ; the road's X, kept within these
+XMax = &1D8
+
+\\ Start a stage's car: low gear, stopped, three turbos.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     the car's state
+\\     A, X: corrupted
+
+NagLoops = 100
+
+.car_start
+{
+    LDA #0
+    LDX #CarBounceTurn-CarGear
+.clear
+    STA CarGear,X
+    DEX:BPL clear
+    LDA #3:STA CarTurbos
+    LDA #NagLoops:STA CarNag
+    RTS
+}
+
+\\ The car's loop: the gear, the speed (towards the gear's top, faster from further below it; braking,
+\\ coasting, off the road, on a slope), then the steering and the drift.
+\\
+\\ Inputs:
+\\     A: the keys (read_keys)
+\\     RoadSpeed, RoadX, RoadC0, RoadFrac, CarOff, CarPitch
+\\
+\\ Outputs:
+\\     RoadSpeed, RoadX, the car's state
+\\     A, X, Y: corrupted
+
+.car_update
+{
+    ZA_AUTO1 held                       ; local: the keys
+    ZA_AUTO2 top                        ; local: the gear's top speed
+    ZA_AUTO1 delta                      ; local: the speed's change accelerating, signed
+    ZA_AUTO1 step                       ; local: x's step
+
+    LDX CarBounce:BEQ @+
+    AND #KeyGear                        ; (bouncing: only the gear)
+.@
+    STA held
+
+    \\ the gear: a held key toggles it every 4 loops; a turbo starts if one's left
+
+    LDA held:AND #KeyGear:BEQ nogear
+    LDA CarGearWait:BNE gearwait
+    LDA CarGear:EOR #1:STA CarGear
+    BEQ @+
+    LDA #4:STA CarScreech               ; (into HI: a screech)
+.@
+    LDA #3:STA CarGearWait
+    BNE geared                          ; always
+.nogear
+    LDA CarGearWait:BEQ geared
+.gearwait
+    DEC CarGearWait
+.geared
+    LDA CarTurbo:BEQ @+
+    DEC CarTurbo:BNE turboed
+    DEC CarTurbos                       ; (one fewer once it's over, as the CPC counts them)
+    JMP turboed
+.@
+    LDA held:AND #KeyTurbo:BEQ turboed
+    LDA CarTurbos:BEQ turboed
+    LDA #60:STA CarTurbo
+    MESSAGE MsgTurbo, MsgTurboPrio
+.turboed
+
+    \ the slow nag (the CPC's &3866): 100 loops below 120, not in the arrest, faster not resetting it
+
+    LDA ArrestState:BNE nagged
+    LDA RoadSpeed+1:BNE nagged
+    LDA RoadSpeed:CMP #120:BCS nagged
+    DEC CarNag:BNE nagged
+    LDA #NagLoops:STA CarNag
+    MESSAGE MsgSlow, MsgSlowPrio
+.nagged
+
+    \\ accelerating: off the road, a loss; else towards the gear's top
+
+    LDA CarOff:BEQ onroad
+    LDX #120
+    CMP #1:BEQ @+
+    LDX #110
+.@
+    LDA RoadSpeed+1:BNE offloss
+    CPX RoadSpeed:BCS onroad            ; (slower than that: no loss)
+.offloss
+    LDA RoadSpeed+1:LSR A
+    LDA RoadSpeed:ROR A:LSR A:LSR A:LSR A:LSR A
+    ORA #1:EOR #&FF:CLC:ADC #1:STA delta    ; -((speed >> 5) OR 1)
+    JMP keys
+.onroad
+    LDX CarGear:BEQ low
+    LDA RoadSpeed:CMP #LO(GearHighFrom)
+    LDA RoadSpeed+1:SBC #HI(GearHighFrom)
+    BCS high
+    LDA CarTurbo:BNE lowturbo           ; (high, crawling, but a turbo: as low's)
+    LDA RoadSpeed+1:LSR A               ; crawling: +((speed >> 4) OR 1)
+    LDA RoadSpeed:ROR A:LSR A:LSR A:LSR A
+    ORA #1:STA delta
+    JMP keys
+.high
+    LDA #LO(GearHigh):LDX #HI(GearHigh)
+    LDY CarTurbo:BEQ topped
+    LDA #LO(GearHighTurbo):LDX #HI(GearHighTurbo)
+    BNE topped                          ; always
+.low
+    LDA #LO(GearLow):LDX #HI(GearLow)
+    LDY CarTurbo:BEQ topped
+.lowturbo
+    LDA #LO(GearLowTurbo):LDX #HI(GearLowTurbo)
+.topped
+    STA top:STX top+1
+    SEC:SBC RoadSpeed:STA delta         ; (top - speed) / 16, up to 63, at least 1
+    TXA:SBC RoadSpeed+1
+    BCC over
+    LSR A:ROR delta:LSR A:ROR delta:LSR A:ROR delta:LSR A:ROR delta
+    LDA delta:AND #63:ORA #1:STA delta
+    JMP keys
+.over
+    LDA RoadSpeed:SEC:SBC top:STA delta     ; over the top: -((speed - top) / 16 AND 31 OR 1)
+    LDA RoadSpeed+1:SBC top+1
+    LSR A:ROR delta:LSR A:ROR delta:LSR A:ROR delta:LSR A:ROR delta
+    LDA delta:AND #31:ORA #1
+    EOR #&FF:CLC:ADC #1:STA delta
+
+    \\ the keys: brake -20, else accelerate by the delta, else coast -10; never below 0
+
+.keys
+    LDA held:AND #KeyBrake:BEQ @+
+    LDA #-20 AND &FF:BNE change         ; always
+.@
+    LDA held:AND #KeyAccel:BEQ @+
+    LDA delta:JMP change
+.@
+    LDA #-10 AND &FF
+.change
+    TAX:BPL up
+    CLC:ADC RoadSpeed:STA RoadSpeed
+    BCS slope
+    DEC RoadSpeed+1
+    BPL slope
+    LDA #0:STA RoadSpeed:STA RoadSpeed+1
+    BEQ slope                           ; always
+.up
+    CLC:ADC RoadSpeed:STA RoadSpeed
+    BCC slope
+    INC RoadSpeed+1
+
+    \\ the slope: every 4th loop, moving, +1 downhill or -1 uphill (not past the turbo's top)
+
+.slope
+    DEC CarSlopeWait:BPL capped
+    LDA #3:STA CarSlopeWait
+    LDA CarPitch:BEQ capped
+    LDA RoadSpeed:ORA RoadSpeed+1:BEQ capped
+    LDA CarPitch:CMP #6:BEQ downhill
+    LDA RoadSpeed:BNE @+
+    DEC RoadSpeed+1
+.@
+    DEC RoadSpeed
+    JMP capped
+.downhill
+    INC RoadSpeed:BNE capped
+    INC RoadSpeed+1
+.capped
+    LDA RoadSpeed:CMP #LO(SpeedCap+1)
+    LDA RoadSpeed+1:SBC #HI(SpeedCap+1)
+    BCC bounce
+    LDA #LO(SpeedCap):STA RoadSpeed
+    LDA #HI(SpeedCap):STA RoadSpeed+1
+
+    \\ a bounce: the speed cut by a quarter a loop down to its end, the shove fading by a sixteenth
+
+.bounce
+    LDA CarBounce:BEQ steer
+    LDA #2:STA CarBounceTurn            ; (the sprite at full lock: the CPC's &3AC8)
+    LDA RoadSpeed:CMP CarBounceEnd
+    LDA RoadSpeed+1:SBC CarBounceEnd+1
+    BCC bounced
+    LDA RoadSpeed+1:LSR A:STA held      ; (held: free while bouncing)
+    LDA RoadSpeed:ROR A:LSR held:ROR A  ; speed / 4
+    ORA #3:STA delta
+    LDA RoadSpeed:SEC:SBC delta:STA RoadSpeed
+    LDA RoadSpeed+1:SBC held:STA RoadSpeed+1
+    JMP shove
+.bounced
+    LDA #0:STA CarBounce
+    LDA #1:STA CarBounceTurn            ; (and as it ends, a quarter lock)
+.shove
+    LDA CarBounceV:LSR A:LSR A:LSR A:LSR A
+    EOR #&FF:SEC:ADC CarBounceV:STA CarBounceV
+    LDX CarBounceSide:CPX #2:BEQ steer
+    CPX #0:BNE right
+    CLC:ADC RoadX:STA RoadX
+    BCC steer
+    INC RoadX+1
+    BCS steer                           ; always
+.right
+    EOR #&FF:SEC:ADC RoadX:STA RoadX
+    BCS steer
+    DEC RoadX+1
+
+    \\ the steering: a velocity each way, built 4 a loop to 36 by its key, cutting the other; both falling 9
+    \\ a loop when neither's held; neither more than speed / 4
+
+.steer
+    LDA CarBounce:BEQ @+
+    LDA #0:STA held                     ; (bouncing: no steering)
+.@
+    LDA held:AND #KeyRight:BEQ notright
+    LDA CarSteerR:CLC:ADC #4
+    CMP #37:BCC @+
+    LDA #36
+.@
+    STA CarSteerR
+    LDA CarSteerL:SEC:SBC CarSteerR
+    BCS @+
+    LDA #0
+.@
+    STA CarSteerL
+    JMP capsteer
+.notright
+    LDA held:AND #KeyLeft:BEQ neither
+    LDA CarSteerL:CLC:ADC #4
+    CMP #37:BCC @+
+    LDA #36
+.@
+    STA CarSteerL
+    LDA CarSteerR:SEC:SBC CarSteerL
+    BCS @+
+    LDA #0
+.@
+    STA CarSteerR
+    JMP capsteer
+.neither
+    LDA CarSteerR:SEC:SBC #9
+    BCS @+
+    LDA #0
+.@
+    STA CarSteerR
+    LDA CarSteerL:SEC:SBC #9
+    BCS @+
+    LDA #0
+.@
+    STA CarSteerL
+.capsteer
+    LDA RoadSpeed+1:LSR A
+    LDA RoadSpeed:ROR A:LSR A           ; speed / 4
+    CMP CarSteerR:BCS @+
+    STA CarSteerR
+.@
+    CMP CarSteerL:BCS @+
+    STA CarSteerL
+.@
+
+    \\ x on by (left - right) / 2, the drift and the lump; the sprite's turn and side
+
+    LDA CarSteerL:SEC:SBC CarSteerR
+    CMP #&80:ROR A                      ; s
+    TAX
+    BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    LDY #0
+    CMP #6:BCC @+
+    INY
+    CMP #12:BCC @+
+    INY
+.@
+    STY CarTurn
+    LDA #0
+    CPY #0:BEQ @+                       ; (straight: plain)
+    CPX #&80:BCS @+                     ; (s < 0, turning right: plain)
+    LDA #1
+.@
+    STA CarLeft
+    LDA CarBounceTurn:BEQ @+            ; (a bounce: its turn, facing its side, the CPC's &3AE5)
+    STA CarTurn
+    LDA CarBounceSide:AND #1:STA CarLeft
+    LDA #0:STA CarBounceTurn
+.@
+    JSR car_drift                       ; A: this loop's drift, signed
+    CLC:ADC CarLump
+    LDY CarBounce:BEQ @+
+    LDA #0                              ; (bouncing: no drift nor lump, though both ran on: the CPC's &3A1A)
+.@
+    STX delta:CLC:ADC delta             ; + s: the step
+
+    \\ skidding: steered hard (left and right 17 or more apart) with the step against the steer; or
+    \\ bouncing
+
+    STA step
+    LDY #0
+    EOR delta:BPL @+
+    LDA CarSteerL:SEC:SBC CarSteerR
+    BCS abs
+    EOR #&FF:ADC #1                     ; (C clear)
+.abs
+    CMP #17:BCC @+
+    INY
+.@
+    LDA CarBounce:BEQ @+
+    LDY #1
+.@
+    STY CarSkid
+    LDA step
+    LDX #0:STX CarLump
+    TAX:BPL @+
+    DEC RoadX+1
+.@
+    CLC:ADC RoadX:STA RoadX
+    BCC @+
+    INC RoadX+1
+.@
+
+    \\ x kept between XMin and XMax
+
+    LDA RoadX:CMP #LO(XMin)
+    LDA RoadX+1:SBC #HI(XMin)
+    BCS @+
+    LDA #LO(XMin):STA RoadX
+    LDA #HI(XMin):STA RoadX+1
+.@
+    LDA RoadX:CMP #LO(XMax+1)
+    LDA RoadX+1:SBC #HI(XMax+1)
+    BCC @+
+    LDA #LO(XMax):STA RoadX
+    LDA #HI(XMax):STA RoadX+1
+.@
+    LDA CarWobble:EOR #1:STA CarWobble
+
+    \\ the screech (the CPC's effect 1, priority 5) while skidding or into HI: every second one heard
+
+    LDA CarSkid:ORA CarScreech:BEQ quiet
+    LDA CarScreech:BEQ @+
+    DEC CarScreech
+.@
+    LDA CarSkidSound:EOR #1:STA CarSkidSound
+    BEQ quiet
+    LDA #1:LDY #5:JMP sound_effect
+.quiet
+    RTS
+}
+
+\\ The engine's note and the turbo's whoosh, for the IRQ (sound.6502). The CPC's engine period is
+\\ k * (255 - speed / 2) + 300 (k 4 in LO, 8 in HI) at 62.5 kHz; here periodic noise at 1/15 of tone 3's
+\\ rate, tone 3's period 2/15 of it: (255 - speed / 2) * 8/15 + 40 in LO (v / 2 + v / 32 here), * 16/15 in
+\\ HI (v + v / 16). The turbo's noise period runs 59 down as the CPC's.
+\\
+\\ Inputs:
+\\     RoadSpeed, CarGear, CarTurbo
+\\
+\\ Outputs:
+\\     sndengine, sndturbo
+\\     A, X: corrupted
+
+.sound_update
+{
+    ZA_AUTO1 v                          ; local: 255 - speed / 2
+    ZA_AUTO2 n                          ; local: the period
+
+    LDA RoadSpeed+1:LSR A
+    LDA RoadSpeed:ROR A
+    EOR #&FF:STA v
+    LDX CarGear:BNE high
+    LSR A:STA n
+    LDA v:LSR A:LSR A:LSR A:LSR A:LSR A
+    CLC:ADC n:ADC #40:STA n             ; (under 256)
+    LDA #0
+    BEQ set                             ; always
+.high
+    LSR A:LSR A:LSR A:LSR A
+    CLC:ADC v:STA n
+    LDA #0:ADC #0:TAX
+    LDA n:CLC:ADC #40:STA n
+    TXA:ADC #0
+.set
+    SEI                                 ; (the IRQ reads both bytes)
+    LDX n:STX sndengine
+    STA sndengine+1
+    CLI
+    LDX CarTurbo:BEQ @+
+    DEX
+.@
+    STX sndturbo
+    RTS
+}
+
+\\ This loop's drift on a curve: 3 for each time the fraction's passed another unit for the curve (255, 127,
+\\ 85, ... for |c| 1-8), with the curve's sign: outwards.
+\\
+\\ Inputs:
+\\     RoadC0, RoadFrac, CarDriftRef, CarDriftTicks
+\\
+\\ Outputs:
+\\     A: the drift, signed
+\\     CarDriftRef, CarDriftTicks
+\\     X: preserved
+\\     Y: corrupted
+
+.car_drift
+{
+    ZA_AUTO1 unit, left, ref            ; local: the curve's unit, the fraction left, the count's reference
+
+    LDA RoadC0:BEQ none
+    BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    TAY:LDA RoadScrollTab-1,Y:STA unit
+    LDA CarDriftRef:STA ref
+    LDY #0
+    LDA RoadFrac:SEC:SBC CarDriftRef
+.count
+    CMP unit:BCC counted
+    SBC unit                            ; (C set)
+    INY
+    STA left
+    LDA ref:CLC:ADC unit:STA ref
+    LDA left
+    JMP count
+.counted
+    BEQ @+                              ; (the CPC keeps the old reference if nothing's left)
+    LDA ref:STA CarDriftRef
+.@
+    TYA:BEQ none
+    CLC:ADC CarDriftTicks:STA CarDriftTicks
+    STY left
+    TYA:ASL A:ADC left                      ; 3n
+    BIT RoadC0:BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    RTS
+.none
+    LDA #0
+    RTS
+}
+
+\\ A segment entered: the drift owed for the one left (what its curve should have moved the car, less what
+\\ it did), and the new segment's pitch from its gradient.
+\\
+\\ Inputs:
+\\     RoadC0: the curve of the segment left
+\\     CarDriftTicks
+\\     A: the new segment's gradient
+\\
+\\ Outputs:
+\\     CarLump, CarDriftRef and CarDriftTicks reset, CarPitch
+\\     A, Y: corrupted
+\\     X: preserved
+
+.car_segment
+{
+    ZA_AUTO1 r                          ; local: the steps owed
+
+    LDY #0
+    CMP #3:BCC @+                       ; (0-2: flat)
+    LDY #6
+    CMP #&80:BCC @+                     ; (3 and up: downhill)
+    LDY #0
+    CMP #&FE:BCS @+                     ; (-2, -1: flat)
+    LDY #3                              ; (-3 and below: uphill)
+.@
+    STY CarPitch
+
+    LDA RoadC0:BEQ reset
+    BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    SEC:SBC CarDriftTicks
+    BEQ reset
+    BMI reset
+    STA r
+    ASL A:ASL A                             ; 4r + r / 2
+    LSR r:ADC r
+    BIT RoadC0:BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    STA CarLump
+.reset
+    LDA #0:STA CarDriftRef:STA CarDriftTicks
+    RTS
+}
+
+\\ How far off the road the car is (the CPC's &2C94), from the car's anchors (where segment 0 ends): the left
+\\ at 106-132 partly, past it off; else the right at 125-142 partly, under it off. In a fork at row 0, from the
+\\ left edge on the bottom line and the second road's right a line up, then the divider between the roads
+\\ (a bounce, ending at 140); with the fork a row ahead, nothing (CarOff as it was). Then the roadside objects
+\\ (not in a fork).
+\\
+\\ Inputs:
+\\     the edge tables (after the renderer's tapers), the fork's state
+\\
+\\ Outputs:
+\\     CarOff, CarAnchorL, CarAnchorR; a bounce
+\\     A, X, Y: corrupted
+
+.car_offroad
+{
+    JSR road_rows                       ; (the rows' anchors, the car's among them)
+    LDA ForkSeen:BEQ normal
+    LDA ForkRow:BEQ fork
+    CMP #1:BNE normal
+    RTS                                 ; (the fork a row on: as the CPC's)
+.normal
+    LDX #0
+    LDA CarAnchorL+1:BNE right          ; (the left: not on the screen)
+    LDA CarAnchorL:CMP #106:BCC right
+    INX
+    CMP #133:BCC done
+    INX
+    BNE done                            ; always
+.right
+    LDA CarAnchorR+1:BNE done           ; (the right: not on the screen, 0)
+    LDA CarAnchorR:CMP #143:BCS done    ; (143 and 125: the CPC's compares carry the last one's borrow)
+    INX
+    CMP #125:BCS done
+    INX
+.done
+    STX CarOff
+    JMP car_roadside
+
+    \\ in a fork at row 0: the left edge's bottom line, the second road's right a line up; the divider
+
+.fork
+    LDX #0
+    LDA EdgeLHi:BNE fright
+    LDA EdgeLLo:CMP #106:BCC fright
+    INX
+    CMP #133:BCC fdone
+    INX
+    BNE fdone                           ; always
+.fright
+    LDA EdgeR2Hi+1:BNE fdone
+    LDA EdgeR2Lo+1:CMP #142:BCS fdone   ; (142, then 125: the CPC's second compare carries a borrow)
+    INX
+    CMP #125:BCS fdone
+    INX
+.fdone
+    STX CarOff
+    LDA ForkBranch:BNE divright
+    LDA CarAnchorL+1:BNE none           ; left branch: the first road's end, E < x < C
+    LDA CarAnchorL
+    CMP ForkDivC:BCS none
+    CMP ForkDivE:BEQ none:BCC none
+    LDX #0                              ; (shoved left)
+    BEQ divider                         ; always
+.divright
+    LDA CarAnchorR+1:BNE none           ; right branch: the second road's start, C <= x < E
+    LDA CarAnchorR
+    CMP ForkDivC+1:BCC none
+    CMP ForkDivE+1:BCS none
+    LDX #1                              ; (shoved right)
+.divider
+    LDA #4:LDY #3:JSR sound_effect      ; (a thump, priority 3)
+    TXA:TAY
+    LDA #140
+    JMP car_bounce
+.none
+    RTS
+}
+
+\\ Collisions with the roadside objects (the CPC's &2D4A): the right side's (S4) in the car's row, the left
+\\ side's (S5) if none, each by its type's bounds on the car's anchors (the right's: E < x < C; the left's:
+\\ C <= x < E; x on the screen, as the CPC's unsigned compares have it). A hit's a thump (effect 4, priority
+\\ 3) and a bounce away from it. With the
+\\ window's base 128 or more the next row's object counts too (the CPC tests the base's top bit, where the
+\\ fraction's was surely meant).
+\\
+\\ Inputs:
+\\     RoadSeg, the window's objects, CarAnchorL, CarAnchorR
+\\
+\\ Outputs:
+\\     the bounce's state
+\\     A, X, Y: corrupted
+
+.car_roadside
+{
+    ZA_AUTO1 v                          ; local: the object's type
+
+    LDA RoadSeg:CLC:ADC #WinObjects:JSR row_object
+    BEQ left
+    LDA CarAnchorR+1:BNE left           ; (the right anchor)
+    LDA CarAnchorR
+    CMP RoadsideRC,X:BCS left
+    CMP RoadsideRE,X:BEQ left:BCC left
+    LDY #0                              ; (shoved left, away from it)
+    LDA RoadsideREnd,X
+    BNE hit                             ; always (no type ends at 0)
+.left
+    LDA RoadSeg:CLC:ADC #WinObjects+&20:JSR row_object
+    BEQ done
+    LDA CarAnchorL+1:BNE done           ; (the left anchor)
+    LDA CarAnchorL
+    CMP RoadsideLC,X:BCC done
+    CMP RoadsideLE,X:BCS done
+    LDY #1                              ; (shoved right)
+    LDA RoadsideLEnd,X
+.hit
+    STA v                               ; (v: the end now)
+    TYA:TAX                             ; (the side: sound_effect keeps X)
+    LDA #4:LDY #3:JSR sound_effect      ; (a thump, priority 3)
+    TXA:TAY
+    LDA v
+    JMP car_bounce
+.done
+    RTS
+
+    \\ the object's type in the car's row (and the next, as above): X and Z from it
+
+.row_object
+    TAX
+    LDA RoadWindow,X:STA v
+    LDA RoadSeg:BPL @+
+    INX
+    LDA RoadWindow,X:ORA v:STA v
+.@
+    LDX v
+    RTS
+}
+
+\\ A bounce's sparks (the CPC's &3AF9, &3B50): for the bounce's first 5 loops, sparks at its side, and no
+\\ off-road effect (CarOff 0) meanwhile.
+\\
+\\ Inputs:
+\\     CarBounce, CarBounceSide, CarSpark
+\\
+\\ Outputs:
+\\     CarSpark, CarSparkSide; CarOff
+\\     A, Y: corrupted
+
+.car_spark
+{
+    LDA #0
+    LDY CarBounce:BEQ none
+    LDY CarSpark:BEQ none
+    DEC CarSpark
+    STA CarOff                          ; (A = 0)
+    LDA CarBounceSide:CLC:ADC #1
+.none
+    STA CarSparkSide
+    RTS
+}
+
+\\ The car's sprites: the wheels by the turn, then the body over them by the turn, the pitch and (half
+\\ off the road, every other loop) a bump; mirrored turning left, a column left on full lock.
+\\
+\\ Inputs:
+\\     CarTurn, CarLeft, CarPitch, CarOff, CarWobble
+\\     back: the playfield
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.draw_car
+{
+    ZA_AUTO1 frame                      ; local: the body's frame, 0-8
+
+    LDA #26:SEC:SBC CarLeft:STA sprite_draw.col
+    LDA #120:SEC:SBC CarLift:STA sprite_draw.bottom ; (higher pulling in behind)
+    LDA CarTurn:ASL A:ORA CarLeft
+    CLC:ADC #SprCarWheels0
+    JSR plot_sprite
+
+    LDA CarTurn:CLC:ADC CarPitch:STA frame
+    LDA CarOff:CMP #1:BNE @+
+    LDA CarWobble:BEQ @+
+    LDA frame:ADC #2:STA frame          ; (C set: +3)
+.@
+    LDA frame:CMP #9:BCC @+
+    SBC #9                              ; (C set)
+.@
+    ASL A:ORA CarLeft
+    CLC:ADC #SprCarBody0
+    TAX
+    LDA #26
+    LDY CarTurn:CPY #2:BNE @+
+    SEC:SBC CarLeft
+.@
+    STA sprite_draw.col
+    LDA #117:SEC:SBC CarLift:STA sprite_draw.bottom
+    TXA:JMP plot_sprite
+}
+
+\\ Collisions (the CPC's &34BC): the traffic within 2 rows and the criminal within 1, by the row and how far
+\\ along its segment the car is, overlapping the player's box (&78-&97, quarter-bytes) across. A hit's code
+\\ (4 at row 1 or past half way at rows 0 and 2; 1 at row 1 past half way) is one less if it's centred, one
+\\ more if it's right of centre, and 0 never registers. A car hit goes and the chain with it, and the player
+\\ bounces off (unless bouncing already: then it's left alone); the criminal's rammed: 10,000 (a double,
+\\ code 1, 50,000 and two rams' damage), stunned, then a short sprint.
+\\
+\\ Inputs:
+\\     the slots (ObjD, ObjX, ObjRow), RoadFrac, RoadSpeed, CarTurbo, CrimFar, CrimStun
+\\
+\\ Outputs:
+\\     the bounce's state; a car hit gone; CrimRams, CrimStun, CrimSprint, Score, Chain
+\\     A, X, Y: corrupted
+
+CarBoxLeft = &78
+CarBoxRight = &98
+TrafficWidth = &28                      ; the CPC's, quarter-bytes
+TrafficEnd = 150                        ; a hit car's bounce ends below this speed
+RamEnd = 200                            ; a ram's, before the 40 added after
+RamEndTurbo = 230                       ; and with a turbo
+
+.car_collide
+{
+    ZA_AUTO1 code                           ; local: a hit's code
+    ZA_AUTO1 side                           ; local: the side it shoves to
+
+    LDX #MaxObjects-1
+.slot
+    LDA ObjType,X:BEQ next
+    CMP #&41:BEQ next                       ; (an obstacle landed, or flying: hit already)
+    CMP #&42:BEQ next
+    LDA ObjRow,X:BEQ next                   ; (not on the screen)
+    LDA ObjXHi,X:BNE next                   ; (off it across)
+    LDA ObjDLo,X:CMP #1:LDA ObjDHi,X:ADC #0:TAY ; its row
+    CPX #0:BNE traffic
+    LDA CrimFar:ORA CrimStun:BNE next       ; (the criminal far off, or stunned)
+    CPY #2:BCC rows
+    BCS next                                ; always
+.traffic
+    CPY #3:BCS next
+.rows
+    DEY:BEQ one
+    BIT RoadFrac:BPL next                   ; (rows 0 and 2: only past half way)
+    LDY #4:BNE across                       ; always
+.one
+    LDY #4
+    BIT RoadFrac:BPL across
+    LDY #1                                  ; (row 1 past half way: close)
+.across
+    LDA ObjXLo,X:AND #&FC
+    CMP #CarBoxRight:BCS next
+    ADC ObjWidth,X                          ; (C clear) its width
+    CMP #CarBoxLeft:BCC next
+    SBC ObjWidth,X                          ; (C set)
+    CMP #&70:BCC coded
+    CMP #&80:BCS right
+    DEY:BEQ next                            ; (centred: one less; 0 never registers)
+    BNE coded                               ; always
+.right
+    INY
+.coded
+    JSR hit
+.next
+    DEX:BPL slot
+    RTS
+
+    \\ hit: the side from the code (under 3 itself, else 3 less: 0 shoved left, 1 right, 2 not shoved)
+
+.hit
+    STY code
+    TYA:CMP #3:BCC @+
+    SBC #3                                  ; (C set)
+.@
+    STA side
+    CPX #0:BEQ ram
+    LDA ObjType,X:BMI car
+    JMP obstacle_hit                        ; (an obstacle: it flies; the car's untouched)
+.car
+    LDA CarBounce:BEQ @+
+    RTS                                     ; (bouncing already: the car's left alone)
+.@
+    STA ObjType,X:STA ObjRow,X              ; (A = 0) it goes, and the chain with it
+    STA Chain
+    LDA #3:LDY #2:JSR sound_effect          ; (the crunch, priority 2)
+    MESSAGE MsgCrash, MsgCrashPrio
+    LDY side
+    LDA #TrafficEnd
+    JMP car_bounce
+.ram
+    LDA #5:STA CrimStun:STA CrimSprint      ; (4 loops untouched; then 4 of sprint)
+    INC CrimRams
+    LDA #3:LDY #1:JSR sound_effect          ; (the crunch, priority 1)
+    LDA #1                                  ; 10,000 (stage 1's: the stage's later)
+    LDY code:DEY:BNE @+
+    INC CrimRams                            ; (a double: two rams' damage, and 50,000)
+    LDA #5
+.@
+    SED
+    LDX ContinuesUsed:BEQ full
+    ASL A:ASL A:ASL A:ASL A                 ; (after a continue a tenth)
+    LDX #1:JSR popup_score
+    CLC:JSR add_score1
+    JMP scored
+.full
+    LDX #2:JSR popup_score
+    CLC:JSR add_score2
+.scored
+    CLD
+    MESSAGE MsgRam, MsgRamPrio
+    LDA CrimRams:CMP #ArrestRams - 1:BNE @+
+    MESSAGE MsgRam19, MsgRam19Prio          ; (one more for the arrest)
+.@
+    LDY side
+    LDA #RamEnd
+    LDX CarTurbo:BEQ @+
+    LDA #RamEndTurbo
+.@
+    LDX #0                                  ; (slot 0 still)
+    JSR car_bounce
+    LDA CarBounceEnd:CLC:ADC #40:STA CarBounceEnd   ; the end 40 more, bouncing already or not
+    BCC done
+    INC CarBounceEnd+1
+.done
+    RTS
+}
+
+\\ A bounce (the CPC's &2DB9), unless one's running: shoved to a side, the shove max(24, 16 + speed / 16),
+\\ ending below the cause's speed or the speed, whichever's lower.
+\\
+\\ Inputs:
+\\     A: the cause's end speed
+\\     Y: the side, 0 shoved left (x up), 1 right, 2 not shoved
+\\     RoadSpeed
+\\
+\\ Outputs:
+\\     the bounce's state
+\\     A: corrupted; X, Y: preserved
+
+.car_bounce
+{
+    ZA_AUTO1 end                            ; local: the cause's end
+
+    STA end
+    LDA CarBounce:BNE bounced
+    STY CarBounceSide
+    LDA #1:STA CarBounce
+    LDA #5:STA CarSpark                     ; (sparks for its first 5 loops)
+    LDA RoadSpeed+1:LSR A                   ; v = max(24, 16 + speed / 16)
+    LDA RoadSpeed:ROR A:LSR A:LSR A:LSR A
+    CLC:ADC #16
+    CMP #24:BCS @+
+    LDA #24
+.@
+    STA CarBounceV
+    LDA end:STA CarBounceEnd                ; the end: min(the cause's, speed)
+    LDA #0:STA CarBounceEnd+1
+    LDA RoadSpeed:CMP end
+    LDA RoadSpeed+1:SBC #0
+    BCS bounced
+    LDA RoadSpeed:STA CarBounceEnd
+    LDA RoadSpeed+1:STA CarBounceEnd+1
+.bounced
+    RTS
+}

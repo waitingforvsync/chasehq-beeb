@@ -1,0 +1,1228 @@
+\\ roaddraw.6502 - the playfield, all of it, every frame (docs/cpc-road.md, the renderer): from the bottom line up
+\\ the road's lines, then the backdrop's, then the sky. In the code's bank; it writes the back playfield.
+
+\\ A line is three spans by the row runner (grass, road, grass: 2-byte cells), then its rumble strips and lane
+\\ pixels stored as final bytes (genroad.py made them, the fill under each known), each by STA &xx00,Y with Y
+\\ the byte's offset in its half-row (Col8) plus the line in the row, the half-row's page patched a row. The
+\\ line's code is there twice, for odd and even lines, each with its fills and bytes patched in as immediates.
+
+SECTION CodeVars                        ; the loader's (make_tables)
+.Col8                                   ; the byte at x / 4 (x in half-pixels): its offset in its half-row,
+    SKIP 256                            ; ((x DIV 4) AND 31) * 8
+.E6Of                                   ; the road's first cell for a left edge at x, as the low byte of
+    SKIP 256                            ; its place in the runner: LO(Runner) + (x DIV 8 + 1) * 6 (cell 32,
+                                        ; the runner's spare, past 247)
+.R6Of                                   ; the grass's first cell after a right edge at x: LO(Runner) +
+    SKIP 256                            ; x DIV 8 * 6
+.SrcLo                                  ; the backdrop's column i MOD 22, i 0-43: BackPlanar + (i MOD 22) * 24
+    SKIP 44
+.SrcHi
+    SKIP 44
+ENDSECTION
+
+ASSERT LO(Col8) == 0 AND LO(E6Of) == 0 AND LO(R6Of) == 0, "the cell tables on pages"
+
+SECTION GameVars
+.RunnerSpare                            ; the runner's spare store: an RTS patched there, or the STA put
+    SKIP 8                              ; back, is harmless
+ENDSECTION
+
+\\ the backdrop's runner: for each of its 22 columns g, a load from the column the scroll puts there (patched
+\\ when the scroll changes), stored to screen columns g, g + 22 and g + 44; Y the backdrop's row, X the line
+\\ in the screen's row
+
+FUNCTION BackStoresBefore(g) = 3 * MIN({g, 20}) + 2 * MAX({0, g - 20})
+FUNCTION BackLoad(g) = 3 * g + 3 * BackStoresBefore(g) ; column g's load in BackRunner
+FUNCTION BackStore(c) = BackLoad(c MOD 22) + 3 + 3 * (c DIV 22) ; screen column c's store
+
+.BackRunner
+FOR g = 0..21
+    ASSERT P% - BackRunner == BackLoad(g)
+    LDA BackPlanar + g * 24,Y           ; self-modified: the column for the scroll
+    FOR c = g..g+22..63
+        ASSERT P% - BackRunner == BackStore(c)
+        STA &FF00 + (c AND 31) * 8,X    ; self-modified: the row's page
+    NEXT
+NEXT
+    RTS
+
+\\ The row runner's pages for the row of a line.
+\\
+\\ Inputs:
+\\     A: the line, 0-127
+\\     back: the playfield drawn
+\\
+\\ Outputs:
+\\     the runner's operands
+\\     A: the row's second page
+
+.runner_row
+{
+    LSR A:LSR A                         ; the row's first page, less the playfield's: 2 a row
+    AND #&FE
+    ORA back                            ; (&40 or &60: no bits in common)
+    FOR c = 0..31
+        STA Runner + 3 * c + 2
+    NEXT
+    ORA #1
+    FOR c = 32..63
+        STA Runner + 3 * c + 2
+    NEXT
+    RTS
+}
+
+\\ the row runner: column c's STA at Runner + 3c, its operand's high byte the row's page (patched a row);
+\\ then a spare store, so a span may end at cell 32 (offset 192) with no test. All in one page, so a span's
+\\ ends are low bytes: RunnerPage + LO(Runner) + 6 * cell
+
+    INPAGE 196
+.Runner
+FOR c = 0..63
+    STA &FF00 + (c AND 31) * 8,X        ; self-modified: the row's page
+NEXT
+    STA RunnerSpare,X
+    RTS
+ASSERT P% - Runner == 196 AND HI(Runner) == HI(P% - 1), "the runner: 64 stores, a spare and an RTS, in a page"
+RunnerPage = HI(Runner) * 256
+
+\\ The backdrop runner's pages for the row of a line.
+\\
+\\ Inputs:
+\\     A: the line, 0-127
+\\     back: the playfield drawn
+\\
+\\ Outputs:
+\\     the backdrop runner's store operands
+\\     A: corrupted
+
+.back_row
+{
+    LSR A:LSR A
+    AND #&FE
+    ORA back
+    FOR c = 0..31
+        STA BackRunner + BackStore(c) + 2
+    NEXT
+    ORA #1
+    FOR c = 32..63
+        STA BackRunner + BackStore(c) + 2
+    NEXT
+    RTS
+}
+
+\\ The backdrop runner's loads for the scroll, unless they're already patched in for it.
+\\
+\\ Inputs:
+\\     A: the scroll, 0-21
+\\
+\\ Outputs:
+\\     the backdrop runner's load operands
+\\     A, X: corrupted
+
+.back_scroll
+{
+.last
+    CMP #&FF:BNE @+                     ; self-modified: the scroll patched in (none at first)
+    RTS
+.@
+    STA last+1
+    EOR #&FF:SEC:ADC #22:TAX            ; 22 - s: column g shows column (22 - s + g) MOD 22
+    FOR g = 0..21
+        LDA SrcLo+g,X:STA BackRunner + BackLoad(g) + 1
+        LDA SrcHi+g,X:STA BackRunner + BackLoad(g) + 2
+    NEXT
+    RTS
+}
+
+\\ The edge tables by number (0 the left, 1-3 the lane lines, 4 the right), for the line code's reads
+
+.TabLoLo
+    EQUB LO(EdgeLLo), LO(Lane1Lo), LO(Lane2Lo), LO(Lane3Lo), LO(EdgeRLo)
+.TabLoHi
+    EQUB HI(EdgeLLo), HI(Lane1Lo), HI(Lane2Lo), HI(Lane3Lo), HI(EdgeRLo)
+.TabHiLo
+    EQUB LO(EdgeLHi), LO(Lane1Hi), LO(Lane2Hi), LO(Lane3Hi), LO(EdgeRHi)
+.TabHiHi
+    EQUB HI(EdgeLHi), HI(Lane1Hi), HI(Lane2Hi), HI(Lane3Hi), HI(EdgeRHi)
+
+\\ A copy of the line code starts with jumps to its patching routines, then the line
+
+LineRow = 0                             ; (A: the row's first page) its stores' pages
+LineFills = 3                           ; its colours, from road_draw's
+LineTables = 6                          ; (Y: the left edge's table, X: the right's) its edge tables
+LineEntry = 69                          ; the line (after its rarer edges' paths)
+
+\\ Draw the playfield into the back buffer: the road's lines segment by segment from the bottom up (a crest
+\\ hides segments: their entries skipped), then the backdrop's rows the horizon leaves showing, then sky.
+\\
+\\ Inputs:
+\\     back: the playfield
+\\     the road's tables (road_frame), RoadSeg, RoadH, RoadScroll
+\\
+\\ Outputs:
+\\     the playfield
+\\     A, X, Y: corrupted
+
+.road_draw
+{
+    ZA_AUTO1 line                       ; local: the line, 127 (the bottom) up
+    ZA_AUTO1 inrow                      ; local: the line in its row
+    ZA_AUTO1 entry                      ; local: the edge tables' entry
+    ZA_AUTO1 j                          ; local: the segment
+    ZA_AUTO1 flags                      ; local: segment 0's flags' place in the window
+    ZA_AUTO1 lines                      ; local: lines left in the segment
+    ZA_AUTO1 stripe, phase              ; local: the stripes: the phase (0 P0, 1 P1) flips as stripe comes to 0
+    ZA_AUTO1 level, levelr, count       ; local: the rumbles' widths (the right's lags), segments to the next
+    ZA_AUTO1 set, marks                 ; local: the colours (0 normal, 1 the alternative); lane lines, 0-3
+    ZA_AUTO1 right                      ; local: the right edge's table (0-4), for the alternative ground's
+    ZA_AUTO1 lx, rx                     ; local: the line's edges on the screen (lx 255, rx 0: no rumble)
+    ZA_AUTO1 r6                         ; local: the right edge's cell, as a runner offset
+    ZA_AUTO1 hidden                     ; local: a crest's lines, summed, 0 or less
+    ZA_AUTO1 forklines                  ; local: the fork's lines (not the backdrop's road, as the CPC's)
+    ZA_AUTO1 c1, c2, c3, c4             ; local: its spans' ends, as the runner's low bytes
+    ZA_AUTO2 fgrass, froad              ; local: its fills, even line then odd
+    ZA_AUTO2 frum, flane                ; local: its rumbles' and lanes' indexes, even then odd
+    ZA_AUTO1 fg, fr, fru, fla           ; local: this line's
+    ZA_AUTO1 rbase                      ; local: a rumble's index, less x AND 2
+    ZA_AUTO1 tleft, tf, tp              ; local: a taper: the left table, the flags, the table it moves
+    ZA_AUTO1 tfar, tn, ten, toff        ; local: its far line, its lines, its near entry, the offset
+    ZA_AUTO2 tx, tx1                    ; local: its X, near then stepped; its far X
+    ZA_AUTO1 tstep, tacc                ; local: |its X difference|, Bresenham's sum
+    ZA_AUTO2 tlo, thi                   ; local: a table's low and high bytes
+
+    LDA #127:STA line
+    LDA #0:STA entry:STA j:STA level:STA levelr:STA set
+    LDA #3:STA count
+    LDA #4:STA right
+    LDA RoadSeg:AND #1:STA stripe
+    LDA RoadSeg:LSR A:AND #1:STA phase
+    LDA RoadSeg:CLC:ADC #WinFlags:STA flags
+    LDA #0:STA forklines
+    LDA RoadY:SEC:SBC RoadY+1:STA lines     ; (the first segment's always drawn: 22 lines or fewer)
+    LDY flags:LDA RoadWindow,Y
+    AND #&E1:CMP #&E1:BNE @+
+    JMP fork                            ; (the car in a fork)
+.@
+    JSR setup
+    JSR colours
+    JMP oddcopy + LineEntry             ; (127: odd)
+
+    \\ the line's code: odd lines' (a new row starts on one), then even lines', the two the same size (the
+    \\ even's padded where the odd's starts a row), so the even's starts halfway
+
+.oddcopy
+FOR odd = {1, 0}
+.copy
+    JMP patchrow
+    JMP patchfills
+    JMP patchtables
+
+    \\ an edge off the screen: the left off it, road from cell 0 (left of it) or none (right), lx 255 for no
+    \\ rumble; the right off it, grass from the road's first cell (left) or none (right), rx 0 for none
+
+.lspecial
+    BMI @+
+    LDA #LO(Runner) + 192               ; (right of the screen: grass to the end)
+    BNE lset                            ; always
+.@
+    LDA #LO(Runner)                     ; (left of it: road from cell 0)
+.lset
+    STA midjsr+1
+    LDA #255:STA lx
+.rxhi2
+    LDA EdgeRHi,Y:BNE rspecial2         ; self-modified: the right edge's table
+.rxlo2
+    LDA EdgeRLo,Y:STA rx                ; self-modified: the right's
+    TAY:LDA R6Of,Y
+    JMP cells
+.rspecial2
+    JSR right_off
+    JMP cells
+.rspecial
+    JSR right_off
+    STA r6
+.lxlo2
+    LDA EdgeLLo,Y:STA lx                ; self-modified: the left edge's table
+    TAY:LDA E6Of,Y:STA midjsr+1
+    LDA r6
+    JMP cells
+
+    \\ the line
+
+.draw
+    ASSERT draw - copy == LineEntry, "LineEntry is ", draw - copy
+    LDA line:AND #7:TAX                 ; X: the line in its row
+    IF odd
+        CPX #7:BNE rowed
+        LDA line:JSR road_row           ; (a new row)
+.rowed
+    ENDIF
+    STX inrow
+    LDY entry
+.lxhi
+    LDA EdgeLHi,Y:BNE lspecial          ; self-modified: the left edge's table
+.rxhi
+    LDA EdgeRHi,Y:BNE rspecial          ; self-modified: the right's
+.rxlo
+    LDA EdgeRLo,Y:STA rx                ; self-modified: the right's
+.lxlo
+    LDA EdgeLLo,Y:STA lx                ; self-modified: the left's
+    TAY:LDA E6Of,Y:STA midjsr+1         ; the road's first cell
+    LDY rx:LDA R6Of,Y                   ; and the grass's after it
+
+    \\ the spans: grass to the road (an RTS there), the road to the grass (an RTS there), the grass to the end
+
+.cells
+    CMP midjsr+1:BCS @+
+    LDA midjsr+1                        ; (no road: the grass from the road's first cell)
+.@
+    STA lastjsr+1
+    LDY midjsr+1:LDA #&60:STA RunnerPage,Y  ; an RTS where the road starts
+.grass1
+    LDA #0                              ; self-modified: the grass
+    JSR Runner
+    ZA_CANCALL Runner
+    LDA #&9D:STA RunnerPage,Y           ; the STA back (the runner keeps Y)
+    LDY lastjsr+1:LDA #&60:STA RunnerPage,Y
+.road
+    LDA #0                              ; self-modified: the road
+.midjsr
+    JSR Runner                          ; self-modified: the road's first cell
+    ZA_CANCALL Runner
+    LDA #&9D:STA RunnerPage,Y
+.grass2
+    LDA #0                              ; self-modified: the grass
+.lastjsr
+    JSR Runner                          ; self-modified: the grass's first cell
+    ZA_CANCALL Runner
+
+    \\ the left rumble: three bytes from lx / 4 (0-61)
+
+    LDA lx:BPL leftlow
+    CMP #248:BCS noleft                 ; (off the right: none)
+    TAY
+    AND #2
+.rumlh
+    ORA #0:TAX                          ; self-modified: the left rumble's bytes
+    LDA Col8,Y:ORA inrow:TAY
+.l1a
+    LDA RumbleA,X:STA &FF00,Y           ; self-modified: the row's second page
+.l1b
+    LDA RumbleB,X:STA &FF08,Y
+.l1c
+    LDA RumbleC,X:STA &FF10,Y
+    JMP noleft
+.leftlow
+    TAY
+    AND #2
+.ruml
+    ORA #0:TAX                          ; self-modified: the left rumble's bytes
+    LDA Col8,Y:ORA inrow:TAY
+.l0a
+    LDA RumbleA,X:STA &FF00,Y           ; self-modified: the row's first page
+.l0b
+    LDA RumbleB,X:STA &FF08,Y
+.l0c
+    LDA RumbleC,X:STA &FF10,Y
+.noleft
+
+    \\ the lane lines, a pixel each on the screen; a block JMPs past the rest when they aren't drawn
+
+.lane1
+    BIT nolanes                         ; self-modified: a JMP (&4C) when there's no lane line here
+    LDY entry
+.m1hi
+    LDA Lane1Hi,Y:BNE lane2             ; self-modified: the first lane line's table
+.m1lo
+    LDA Lane1Lo,Y:TAY
+    AND #2
+.lb1
+    ORA #0:TAX                          ; self-modified: the lane bytes
+    LDA Col8,Y:ORA inrow
+    CPY #128:TAY                        ; (C: the row's second half)
+    LDA LaneBytes,X
+    BCS m1high
+.m1s0
+    STA &FF00,Y                         ; self-modified: the row's first page
+    BCC lane2                           ; always
+.m1high
+.m1s1
+    STA &FF00,Y                         ; self-modified: the row's second page
+.lane2
+    BIT nolanes                         ; self-modified: a JMP when there's no second
+    LDY entry
+.m2hi
+    LDA Lane2Hi,Y:BNE lane3             ; self-modified: the second's table
+.m2lo
+    LDA Lane2Lo,Y:TAY
+    AND #2
+.lb2
+    ORA #0:TAX                          ; self-modified: the lane bytes
+    LDA Col8,Y:ORA inrow
+    CPY #128:TAY
+    LDA LaneBytes,X
+    BCS m2high
+.m2s0
+    STA &FF00,Y                         ; self-modified: the row's first page
+    BCC lane3                           ; always
+.m2high
+.m2s1
+    STA &FF00,Y                         ; self-modified: the row's second page
+.lane3
+    BIT nolanes                         ; self-modified: a JMP when there's no third
+    LDY entry
+.m3hi
+    LDA Lane3Hi,Y:BNE nolanes           ; self-modified: the third's table
+.m3lo
+    LDA Lane3Lo,Y:TAY
+    AND #2
+.lb3
+    ORA #0:TAX                          ; self-modified: the lane bytes
+    LDA Col8,Y:ORA inrow
+    CPY #128:TAY
+    LDA LaneBytes,X
+    BCS m3high
+.m3s0
+    STA &FF00,Y                         ; self-modified: the row's first page
+    BCC nolanes                         ; always
+.m3high
+.m3s1
+    STA &FF00,Y                         ; self-modified: the row's second page
+.nolanes
+
+    \\ the right rumble: three bytes from rx / 4 - 2 (0-61), the row's first half out of line
+
+    LDA rx:SEC:SBC #8:BCC noright
+    BPL rightlow
+    TAY
+    AND #2
+.rumrh
+    ORA #0:TAX                          ; self-modified: the right rumble's bytes
+    LDA Col8,Y:ORA inrow:TAY
+.r1a
+    LDA RumbleA,X:STA &FF00,Y           ; self-modified: the row's second page
+.r1b
+    LDA RumbleB,X:STA &FF08,Y
+.r1c
+    LDA RumbleC,X:STA &FF10,Y
+.noright
+
+    \\ up a line, on in the other copy, or the segment's end
+
+    DEC line
+    INC entry
+    DEC lines:BEQ ended
+    IF odd
+        JMP evencopy + LineEntry
+    ELSE
+        JMP oddcopy + LineEntry
+    ENDIF
+.ended
+    JMP segend
+
+    \\ the right rumble in the row's first half
+
+.rightlow
+    TAY
+    AND #2
+.rumr
+    ORA #0:TAX                          ; self-modified: the right rumble's bytes
+    LDA Col8,Y:ORA inrow:TAY
+.r0a
+    LDA RumbleA,X:STA &FF00,Y           ; self-modified: the row's first page
+.r0b
+    LDA RumbleB,X:STA &FF08,Y
+.r0c
+    LDA RumbleC,X:STA &FF10,Y
+    JMP noright
+
+    \\ this copy's stores' pages (A: the row's first page; out, its second)
+
+.patchrow
+    FOR site = {l0a, l0b, l0c, r0a, r0b, r0c}
+        STA site + 5
+    NEXT
+    FOR site = {m1s0, m2s0, m3s0}
+        STA site + 2
+    NEXT
+    ORA #1
+    FOR site = {l1a, l1b, l1c, r1a, r1b, r1c}
+        STA site + 5
+    NEXT
+    FOR site = {m1s1, m2s1, m3s1}
+        STA site + 2
+    NEXT
+    RTS
+
+    \\ this copy's colours: the fills for its lines, its rumbles' and lanes' bytes (the odd line's 12 and 4
+    \\ on), the lane blocks run
+
+.patchfills
+    LDY grassfill:LDA FillNormal+odd,Y
+    STA grass1+1:STA grass2+1
+    LDY roadfill:LDA FillNormal+odd,Y
+    STA road+1
+    LDA rumbleleft:CLC:ADC #12 * odd
+    STA ruml+1:STA rumlh+1
+    LDA rumbleright:CLC:ADC #12 * odd
+    STA rumr+1:STA rumrh+1
+    LDA lanebytes:ORA #4 * odd
+    STA lb1+1:STA lb2+1:STA lb3+1
+    LDA laneops:STA lane1
+    LDA laneops+1:STA lane2
+    LDA laneops+2:STA lane3
+    RTS
+
+    \\ this copy's edge tables' reads (Y: the left's, X: the right's; the lane lines' follow the left's)
+
+.patchtables
+    LDA TabHiLo,Y:STA lxhi+1
+    LDA TabHiHi,Y:STA lxhi+2
+    LDA TabLoLo,Y:STA lxlo+1:STA lxlo2+1
+    LDA TabLoHi,Y:STA lxlo+2:STA lxlo2+2
+    LDA TabHiLo,X:STA rxhi+1:STA rxhi2+1
+    LDA TabHiHi,X:STA rxhi+2:STA rxhi2+2
+    LDA TabLoLo,X:STA rxlo+1:STA rxlo2+1
+    LDA TabLoHi,X:STA rxlo+2:STA rxlo2+2
+    FOR lane = {{m1hi, m1lo}, {m2hi, m2lo}, {m3hi, m3lo}}
+        INY
+        CPY #5:BCS tabled               ; (no more lane lines)
+        LDA TabHiLo,Y:STA lane[0]+1
+        LDA TabHiHi,Y:STA lane[0]+2
+        LDA TabLoLo,Y:STA lane[1]+1
+        LDA TabLoHi,Y:STA lane[1]+2
+    NEXT
+.tabled
+    RTS
+
+    IF odd
+        ASSERT P% - copy == (copiesend - oddcopy) DIV 2, "the two copies the same size"
+    ELSE
+        SKIP 9                          ; (the odd's new row)
+        ASSERT copy == evencopy, "the even copy halfway"
+    ENDIF
+NEXT
+.copiesend
+evencopy = oddcopy + (copiesend - oddcopy) DIV 2
+
+    \\ a segment's end: the stripes and rumbles move on; the next segment's lines, or a crest's hidden ones
+    \\ skipped (an entry each), or the road's end (a span of 80-223)
+
+.segend
+    LDA stripe:EOR #1:STA stripe
+    BNE @+
+    LDA phase:EOR #1:STA phase
+    LDA level:STA levelr
+.@
+    DEC count:BNE @+
+    LDA #5:STA count
+    LDA level:CMP #2:BCS @+
+    INC level
+.@
+    INC j
+    LDY j
+    LDA RoadY,Y:SEC:SBC RoadY+1,Y
+    BEQ flat
+    CMP #&50:BCC shown
+    CMP #&E0:BCC road_done              ; (80-223: the end)
+    STA hidden                          ; (a crest)
+.hide
+    INC j
+    LDY j
+    LDA RoadY,Y:SEC:SBC RoadY+1,Y
+    CMP #&50:BCC @+
+    CMP #&E0:BCC road_done
+.@
+    INC entry
+    CLC:ADC hidden
+    BEQ @+
+    BPL shown
+.@
+    STA hidden
+    JMP hide
+.flat
+    INC entry
+    JMP segend
+
+    \\ a segment drawn: no further up than the playfield's top line
+
+.shown
+    STA lines
+    LDA line:BMI road_done              ; (the playfield full)
+    CMP lines:BCS @+
+    ADC #1:STA lines                    ; (C clear) to line 0 only
+.@
+    LDA flags:CLC:ADC j:TAY
+    LDA RoadWindow,Y
+    AND #&E1:CMP #&E1:BNE @+
+    JMP fork                            ; (a fork's hold: the fork to the end)
+.@
+    JSR setup
+    JSR colours
+    LDA line:LSR A
+    BCC @+
+    JMP oddcopy + LineEntry
+.@
+    JMP evencopy + LineEntry
+
+    \\ the backdrop's rows: all 24 if the horizon's at or above the road's top, none if it's below the
+    \\ playfield's bottom, else those above the road; not past the playfield's top
+
+.full
+    RTS                                 ; (the road to the top)
+.road_done
+    ZA_AUTO1 rows                       ; local: the backdrop's rows to draw
+    ZA_AUTO1 r                          ; local: the next one
+
+    LDA line:BMI full
+    LDA #127:SEC:SBC line
+    SEC:SBC forklines:STA r             ; (r: the road's lines, for the moment, less the fork's)
+    LDA RoadH+1:BMI sky
+    BNE allrows
+    LDA RoadH:CMP r:BCS allrows
+    SEC:SBC r:CLC:ADC #24               ; H - B + 24
+    BMI sky
+    BEQ sky
+    BPL rowsset                         ; always
+.allrows
+    LDA #24
+.rowsset
+    STA rows
+    LDA line:CMP rows:BCS @+            ; no higher than the playfield's top
+    LDA line:STA rows
+.@
+    LDA rows:BEQ sky
+    LDA RoadScroll:JSR back_scroll
+    LDA #24:SEC:SBC rows:STA r
+    LDA line:JSR back_row
+.backline
+    LDA line:AND #7
+    CMP #7:BNE @+
+    LDA line:JSR back_row
+    LDA #7
+.@
+    TAX
+    LDY r
+    JSR BackRunner
+    ZA_CANCALL BackRunner
+    DEC line
+    INC r
+    DEC rows:BNE backline
+    LDA line:BMI done
+    AND #7:CMP #7:BEQ skyline           ; (the sky starts on a row of its own)
+    LDA line:JSR runner_row             ; (or part way up the backdrop's last)
+
+    \\ the sky, to the top
+
+.sky
+    LDA line:BMI done
+.skyline
+    LDA line:AND #7:TAX
+    CPX #7:BNE @+
+    LDA line:JSR runner_row
+.@
+    LDA #SkyByte
+    JSR Runner
+    ZA_CANCALL Runner
+    DEC line:BPL skyline
+.done
+    RTS
+
+    \\ the fork's lines (the CPC's &4DCE), from its first hold segment to the road's end: five spans (grass, the
+    \\ first road, grass, the second road, grass), four rumbles, and on P1 the two lane lines; the normal colours;
+    \\ the phase and levels carried on (the right rumbles at the left's level); a crest's segments an entry
+    \\ each; its lines not the backdrop's road
+
+.fork
+    LDA line:JSR fork_row
+.fseg
+    JSR fork_colours
+.fline
+    LDA line:AND #7:STA inrow
+    CMP #7:BNE @+
+    LDA line:JSR fork_row               ; (a new row)
+.@
+    LDA line:AND #1:TAX                 ; the line's fills
+    LDA fgrass,X:ZA_INDEXEDBY 0..1:STA fg
+    LDA froad,X:ZA_INDEXEDBY 0..1:STA fr
+    LDA frum,X:ZA_INDEXEDBY 0..1:STA fru
+    LDA flane,X:ZA_INDEXEDBY 0..1:STA fla
+
+    \\ the spans' ends as the runner's cells: E(L1), E(the first's end), E(the second's start), R(R2), none
+    \\ before the last
+
+    LDY entry
+    LDX EdgeLLo,Y:LDA EdgeLHi,Y:JSR fork_e:STA c1
+    LDX Lane2Lo,Y:LDA Lane2Hi,Y:JSR fork_e
+    CMP c1:BCS @+
+    LDA c1
+.@
+    STA c2
+    LDX Lane3Lo,Y:LDA Lane3Hi,Y:JSR fork_e
+    CMP c2:BCS @+
+    LDA c2
+.@
+    STA c3
+    LDA EdgeR2Hi,Y:BEQ @+
+    JSR right_off
+    JMP r2
+.@
+    LDX EdgeR2Lo,Y:LDA R6Of,X
+.r2
+    CMP c3:BCS @+
+    LDA c3
+.@
+    STA c4
+
+    \\ the spans, each to an RTS at its end
+
+    LDX inrow
+    LDY c1:LDA #&60:STA RunnerPage,Y
+    LDA fg
+    JSR Runner
+    ZA_CANCALL Runner
+    LDA #&9D:STA RunnerPage,Y
+    LDY c2:LDA #&60:STA RunnerPage,Y
+    LDA c1:STA fj1+1
+    LDA fr
+.fj1
+    JSR Runner                          ; self-modified: the first road's cell
+    ZA_CANCALL Runner
+    LDA #&9D:STA RunnerPage,Y
+    LDY c3:LDA #&60:STA RunnerPage,Y
+    LDA c2:STA fj2+1
+    LDA fg
+.fj2
+    JSR Runner                          ; self-modified: the grass between's
+    ZA_CANCALL Runner
+    LDA #&9D:STA RunnerPage,Y
+    LDY c4:LDA #&60:STA RunnerPage,Y
+    LDA c3:STA fj3+1
+    LDA fr
+.fj3
+    JSR Runner                          ; self-modified: the second road's
+    ZA_CANCALL Runner
+    LDA #&9D:STA RunnerPage,Y
+    LDA c4:STA fj4+1
+    LDA fg
+.fj4
+    JSR Runner                          ; self-modified: the grass after
+    ZA_CANCALL Runner
+
+    \\ the rumbles: L1's and the second's start from x / 4 (as a left edge), the first's end from x / 4 - 1
+    \\ (road under both ends when x / 4 is even), R2's from x / 4 - 2 (as a right edge)
+
+    LDY entry
+    LDA EdgeLHi,Y:BNE @+
+    LDA EdgeLLo,Y:CMP #248:BCS @+
+    JSR fork_left
+.@
+    LDY entry
+    LDA Lane2Hi,Y:BNE @+
+    LDA Lane2Lo,Y:SEC:SBC #4:BCC @+
+    CMP #248:BCS @+
+    JSR fork_mid
+.@
+    LDY entry
+    LDA Lane3Hi,Y:BNE @+
+    LDA Lane3Lo,Y:CMP #248:BCS @+
+    JSR fork_left
+.@
+    LDY entry
+    LDA EdgeR2Hi,Y:BNE @+
+    LDA EdgeR2Lo,Y:SEC:SBC #8:BCC @+
+    TAY:LDA fru:ORA #1:JSR fork_rumble  ; (the right edge's bytes)
+.@
+
+    \\ the lane lines on P1: the first's (Lane1), the second's (EdgeR, which the split made it)
+
+    LDA phase:BEQ flined
+    LDY entry
+    LDA Lane1Hi,Y:BNE @+
+    LDA Lane1Lo,Y:JSR fork_lane
+.@
+    LDY entry
+    LDA EdgeRHi,Y:BNE flined
+    LDA EdgeRLo,Y:JSR fork_lane
+.flined
+
+    \\ up a line, or the segment's end
+
+    INC forklines
+    DEC line:BMI fdone
+    INC entry
+    DEC lines:BEQ fend
+    JMP fline
+.fdone
+    JMP road_done
+
+    \\ the segment's end: the stripes and the levels move on; zero and crest segments an entry each; the road's
+    \\ end (80-223)
+
+.fend
+    LDA stripe:EOR #1:STA stripe
+    BNE @+
+    LDA phase:EOR #1:STA phase
+.@
+    DEC count:BNE @+
+    LDA #5:STA count
+    LDA level:CMP #2:BCS @+
+    INC level
+.@
+    INC j
+    LDY j
+    LDA RoadY,Y:SEC:SBC RoadY+1,Y
+    BEQ fskip
+    BMI fskip
+    CMP #&50:BCS fdone
+    STA lines
+    LDA line:CMP lines:BCS @+
+    ADC #1:STA lines                    ; (C clear) to line 0 only
+.@
+    JMP fseg
+.fskip
+    INC entry
+    JMP fend
+
+    \\ a left edge's cell (A its X's high byte, N and Z from it; X its low byte) as the runner's low byte: x
+    \\ / 8 + 1, or cell 0 left of the screen, 32 right of it
+
+.fork_e
+    BEQ @+
+    BMI fe0
+    LDA #LO(Runner) + 192
+    RTS
+.fe0
+    LDA #LO(Runner)
+    RTS
+.@
+    LDA E6Of,X
+    RTS
+
+    \\ the fork's colours for its phase and level (the normal set's): fills, rumbles' and lanes' indexes
+
+.fork_colours
+    LDA phase:ASL A:ASL A:TAX           ; (phase * 4: the fills' P0 grass or P1 road)
+    LDY phase:BNE @+
+    LDA FillNormal,X:STA fgrass
+    LDA FillNormal+1,X:STA fgrass+1
+    LDA FillNormal+2,X:STA froad
+    LDA FillNormal+3,X:STA froad+1
+    JMP fcrum
+.@
+    LDA FillNormal,X:STA froad
+    LDA FillNormal+1,X:STA froad+1
+    LDA FillNormal+2,X:STA fgrass
+    LDA FillNormal+3,X:STA fgrass+1
+.fcrum
+    LDA phase:ASL A:ADC phase           ; (C clear) phase * 3
+    ASL A:ADC level                     ; * 2 + level: then * 4
+    ASL A:ASL A:STA frum
+    CLC:ADC #12:STA frum+1              ; (odd lines' 12 on)
+    LDA phase:ASL A:ASL A:ASL A:STA flane
+    ORA #4:STA flane+1
+    RTS
+
+    \\ a rumble's three bytes (A its index less x AND 2, the side in bit 0; Y its first byte's x), by stores
+    \\ whose pages fork_row patches a row
+
+.fork_left
+    TAY:LDA fru                         ; (A: x; a left edge's bytes)
+.fork_rumble
+    STA rbase
+    TYA:AND #2:ORA rbase:TAX
+    LDA Col8,Y:ORA inrow
+    CPY #128:TAY                        ; (C: the row's second half)
+    BCS frhigh
+    LDA RumbleA,X
+.fra0
+    STA &FF00,Y                         ; self-modified: the row's first page
+    LDA RumbleB,X
+.frb0
+    STA &FF08,Y
+    LDA RumbleC,X
+.frc0
+    STA &FF10,Y
+    RTS
+.frhigh
+    LDA RumbleA,X
+.fra1
+    STA &FF00,Y                         ; self-modified: the row's second page
+    LDA RumbleB,X
+.frb1
+    STA &FF08,Y
+    LDA RumbleC,X
+.frc1
+    STA &FF10,Y
+    RTS
+
+    \\ the first road's end (A: its x - 4): a right edge's bytes when x / 4 is odd, else road under both ends
+
+.fork_mid
+    TAY:AND #4:BNE @+
+    LDA fru:ORA #1:JMP fork_rumble
+.@
+    TYA:AND #2:ORA fru:TAX
+    LDA Col8,Y:ORA inrow
+    CPY #128:TAY
+    BCS fmhigh
+    LDA RumbleRRA,X
+.fma0
+    STA &FF00,Y                         ; self-modified: the row's first page
+    LDA RumbleRRB,X
+.fmb0
+    STA &FF08,Y
+    LDA RumbleRRC,X
+.fmc0
+    STA &FF10,Y
+    RTS
+.fmhigh
+    LDA RumbleRRA,X
+.fma1
+    STA &FF00,Y                         ; self-modified: the row's second page
+    LDA RumbleRRB,X
+.fmb1
+    STA &FF08,Y
+    LDA RumbleRRC,X
+.fmc1
+    STA &FF10,Y
+    RTS
+
+    \\ a lane line's pixel (A: its x)
+
+.fork_lane
+    TAY:AND #2:ORA fla:TAX
+    LDA Col8,Y:ORA inrow
+    CPY #128:TAY
+    LDA LaneBytes,X
+    BCS flhigh
+.fl0
+    STA &FF00,Y                         ; self-modified: the row's first page
+    RTS
+.flhigh
+.fl1
+    STA &FF00,Y                         ; self-modified: the row's second page
+    RTS
+
+    \\ the fork's row: the runner's pages, and its own stores'
+
+.fork_row
+    JSR runner_row                      ; (A: the row's second page)
+    FOR site = {fra1, frb1, frc1, fma1, fmb1, fmc1, fl1}
+        STA site + 2
+    NEXT
+    SEC:SBC #1
+    FOR site = {fra0, frb0, frc0, fma0, fmb0, fmc0, fl0}
+        STA site + 2
+    NEXT
+    RTS
+
+    \\ a taper (the CPC's &4724, for a lane layout's segment with bit 2 or 3, j up to 17): one table redrawn
+    \\ as a straight line over the taper's lines, so an edge slides across a lane. The table: bit 5 the right
+    \\ side's (bit 7: EdgeR, else Lane3), else the left. Segment 0 with bit 2: its lines to y[2], offset by
+    \\ the fraction / 32 * 4; with bit 3: to y[1], offset 32 more; later segments bit 2 only, to y[j + 2], no
+    \\ offset. Narrowing (bit 4): from the table at the near line less the offset to the one before's at the
+    \\ far; widening: from the one before's plus the offset to the table's. The difference clamped by its low
+    \\ byte's sign, stepped by Bresenham into the table (bit 5: the one before), the near line's entry first.
+
+.taper
+    STA tf
+    AND #&0C:BNE @+
+.tnone
+    RTS
+.@
+    LDA j:CMP #18:BCS tnone
+    LDA tf:AND #&20:BEQ tl
+    LDA #3
+    BIT tf:BPL @+
+    LDA #4
+.@
+    STA tp
+    JMP tlines
+.tl
+    LDA tleft:STA tp
+.tlines
+    LDY j:BNE tlater
+    LDA tf:AND #4:BEQ tsecond
+    LDA RoadY+2:LDX #0
+    BEQ tfarset                         ; always
+.tsecond
+    LDA RoadY+1:LDX #32
+    BNE tfarset                         ; always
+.tlater
+    LDA tf:AND #4:BEQ tnone
+    LDA RoadY+2,Y
+    LDX #&FF                            ; (no offset)
+.tfarset
+    STA tfar
+    LDA RoadY,Y:SEC:SBC tfar
+    BCC tnone:BEQ tnone                 ; (the CPC's unsigned test)
+    STA tn
+    LDA #96:SEC:SBC RoadY,Y:STA ten     ; the near line's entry
+    LDA #0
+    CPX #&FF:BEQ @+
+    STX toff
+    LDA RoadFrac:LSR A:LSR A:LSR A:AND #&1C
+    CLC:ADC toff
+.@
+    STA toff
+
+    \\ the ends: narrowing, the table less the offset to the one before's; widening, the one before's plus it
+    \\ to the table's
+
+    LDA tf:AND #&10:BEQ twiden
+    LDA tp:LDY ten:JSR tread
+    LDA tx:SEC:SBC toff:STA tx
+    BCS @+
+    DEC tx+1
+.@
+    LDX tp:DEX:TXA
+    JMP tfarx
+.twiden
+    LDX tp:DEX:TXA:LDY ten:JSR tread
+    LDA tx:CLC:ADC toff:STA tx
+    BCC @+
+    INC tx+1
+.@
+    LDA tp
+.tfarx
+    STA tfar                            ; (the far table now)
+    LDA tx:STA tx1
+    LDA tx+1:STA tx1+1
+    LDA ten:CLC:ADC tn:TAY
+    LDA tfar:JSR tread                  ; tx: the far X; tx1: the near
+    LDA tx:SEC:SBC tx1:STA tstep        ; d = far - near, by its low byte
+    LDA tx+1:SBC tx1+1
+    BMI tneg
+    BIT tstep:BPL @+
+    LDA #&7F:STA tstep                  ; (positive, the low byte not: 127)
+.@
+    JMP tstart
+.tneg
+    BIT tstep:BMI tstart
+    LDA #&81:STA tstep                  ; (negative, the low byte not: -127)
+.tstart
+    LDA tx1:STA tx                      ; from the near X
+    LDA tx1+1:STA tx+1
+
+    \\ the table written: bit 5's one before
+
+    LDX tp
+    LDA tf:AND #&20:BEQ @+
+    DEX
+.@
+    LDA TabLoLo,X:STA tlo
+    LDA TabLoHi,X:STA tlo+1
+    LDA TabHiLo,X:STA thi
+    LDA TabHiHi,X:STA thi+1
+    LDX tn
+    LDY ten
+    LDA tstep:BMI tdown
+    CMP tn:BEQ tus:BCC tus
+    JMP tupsteep
+.tus
+    LDA tn:LSR A:STA tacc               ; shallow, up: the sum from half the lines
+.tusl
+    LDA tacc:CLC:ADC tstep
+    CMP tn:BCC @+
+    SBC tn                              ; (C set)
+    INC tx:BNE @+
+    INC tx+1
+.@
+    STA tacc
+    JSR twrite
+    DEX:BNE tusl
+    RTS
+.tupsteep
+    LDA #0:STA tacc                     ; steep, up: steps till the sum passes |d|
+.tupl
+    INC tx:BNE @+
+    INC tx+1
+.@
+    LDA tacc:CLC:ADC tn:STA tacc
+    BCS @+
+    CMP tstep:BCC tupl
+.@
+    SEC:SBC tstep:STA tacc
+    JSR twrite
+    DEX:BNE tupl
+    RTS
+.tdown
+    EOR #&FF:CLC:ADC #1:STA tstep       ; |d|
+    CMP tn:BEQ tds:BCC tds
+    JMP tdownsteep
+.tds
+    LDA tn:LSR A:STA tacc
+.tdsl
+    LDA tacc:CLC:ADC tstep
+    CMP tn:BCC tdsk
+    SBC tn:STA tacc                     ; (C set)
+    LDA tx:BNE @+
+    DEC tx+1
+.@
+    DEC tx
+    JMP tdsw
+.tdsk
+    STA tacc
+.tdsw
+    JSR twrite
+    DEX:BNE tdsl
+    RTS
+.tdownsteep
+    LDA #0:STA tacc
+.tdnl
+    LDA tx:BNE @+
+    DEC tx+1
+.@
+    DEC tx
+    LDA tacc:CLC:ADC tn:STA tacc
+    BCS @+
+    CMP tstep:BCC tdnl
+.@
+    SEC:SBC tstep:STA tacc
+    JSR twrite
+    DEX:BNE tdnl
+    RTS
+
+    \\ a table's entry (A: its number, Y: the entry) into tx; tx into the written table's entry Y, Y on
+
+.tread
+    TAX
+    LDA TabLoLo,X:STA tlo
+    LDA TabLoHi,X:STA tlo+1
+    LDA TabHiLo,X:STA thi
+    LDA TabHiHi,X:STA thi+1
+    LDA (tlo),Y:STA tx
+    LDA (thi),Y:STA tx+1
+    RTS
+.twrite
+    LDA tx:STA (tlo),Y
+    LDA tx+1:STA (thi),Y
+    INY
+    RTS
+
+    \\ the right edge off the screen (N: its high byte's sign): grass from the road's first cell (left of
+    \\ it, cell 0) or none (right, cell 32), and rx 0 for no rumble
+
+.right_off
+    BMI @+
+    LDA #0:STA rx
+    LDA #LO(Runner) + 192
+    RTS
+.@
+    LDA #0:STA rx
+    LDA #LO(Runner)
+    RTS
+
+    \\ a segment's flags: the tables for its edges and lane lines, its colours. A layout of lanes (t, bits
+    \\ 0-1, not 0) sticks until the full road's back (t = 0); the alternative ground takes the left edge
+
+.setup
+    LDA flags:CLC:ADC j:TAY
+    LDA RoadWindow,Y
+    TAX:AND #3:BNE lanes
+    STA set                             ; (t = 0: the full road, normal colours)
+    LDA #3:STA marks
+    LDY #0:LDX #4
+    BNE tables                          ; always
+.lanes
+    SEC:SBC #1:TAY                      ; the left edge's table, t - 1
+    TXA:AND #&40:BNE special
+    STY tleft
+    TXA:JSR taper                       ; (a taper's segments: one table redrawn straight)
+    LDY tleft
+    LDA flags:CLC:ADC j:TAX
+    LDA RoadWindow,X:TAX                ; (the flags again)
+    LDA #1                              ; two lanes and a line, or (bit 7) three and two lines
+    CPX #&80:BCC @+
+    LDA #2
+.@
+    STA marks
+    TYA:SEC:ADC marks:TAX               ; the right's: past the lines
+.tables
+    STX right
+.lastl
+    CPY #&FF:BNE change                 ; self-modified: the left table patched in
+.lastr
+    CPX #&FF:BNE change                 ; self-modified: the right
+.plain
+    RTS
+.special
+    TXA:AND #&A0:CMP #&80:BNE plain     ; (&C0 without bit 5: the alternative ground; tunnels not yet)
+    LDA #1:STA set
+    LDA #0:STA marks
+    LDY #0:LDX right                    ; the left edge, the right as it was
+    JMP tables
+.change
+    STY lastl+1:STX lastr+1
+    JSR oddcopy + LineTables
+    LDY lastl+1:LDX lastr+1
+    JMP evencopy + LineTables
+
+    \\ the colours, for the set, the phase and the rumbles' widths, into both copies; and which lane blocks
+    \\ run. Only when they change
+
+.colours
+    ZA_AUTO1 grassfill, roadfill        ; local: the fills' indexes (the even line's)
+    ZA_AUTO1 rumbleleft, rumbleright    ; local: the rumbles' (the even line's)
+    ZA_AUTO1 lanebytes                  ; local: the lane bytes' (the even line's)
+    ZA_AUTO 3, laneops                  ; local: the lane blocks' first opcodes
+
+    LDA set:ASL A:ORA phase:ASL A:ASL A:ORA marks
+    ASL A:ASL A:ORA level:ASL A:ASL A:ORA levelr
+.lastkey
+    CMP #&FF:BNE @+                     ; self-modified: the colours patched in (never &FF)
+    RTS
+.@
+    STA lastkey+1
+    LDA set:ASL A:ORA phase:ASL A:ASL A     ; (set * 2 + phase) * 4: P0's grass, P1's road
+    LDX phase:BNE @+
+    ORA #2                              ; (P0's road)
+.@
+    STA roadfill
+    EOR #2:STA grassfill                ; (the other)
+    LDA set:ASL A:ORA phase:ASL A       ; (set * 2 + phase) * 2
+    STA lanebytes
+    ASL A:ADC lanebytes                 ; * 3 (C clear)
+    TAX
+    ADC level:ASL A:ASL A:STA rumbleleft    ; (+ level) * 4
+    TXA:ADC levelr:ASL A:ASL A
+    ORA #1:STA rumbleright              ; (the right side's)
+    LDA lanebytes:ASL A:ASL A:STA lanebytes ; ((set * 2 + phase) * 2) * 4, the even line's
+
+    \\ the lane blocks: BIT (run) or JMP (skip): none on P0
+
+    LDA phase:BEQ @+
+    LDA marks
+.@
+    FOR k = 0..2
+        LDX #&4C                        ; JMP
+        CMP #k+1:BCC @+
+        LDX #&2C                        ; BIT
+.@
+        STX laneops+k
+    NEXT
+    JSR oddcopy + LineFills
+    JMP evencopy + LineFills
+}
+
+ASSERT FillAlt == FillNormal + 8, "the alternative fills follow the normal"
+
+\\ The row runner's pages, and both line copies' stores', for a row of the road.
+\\
+\\ Inputs:
+\\     A: the line, 0-127
+\\     back: the playfield drawn
+\\
+\\ Outputs:
+\\     the runner's and the line code's store operands
+\\     A: corrupted
+
+.road_row
+{
+    JSR runner_row                      ; (A: the row's second page)
+    AND #&FE
+    JSR road_draw.oddcopy + LineRow
+    AND #&FE
+    JMP road_draw.evencopy + LineRow
+}

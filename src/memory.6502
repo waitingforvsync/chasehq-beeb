@@ -1,0 +1,58 @@
+\\ memory.6502 - where everything lives once the game has the machine: the zero page pool, main RAM's
+\\ regions, and its pools of workspace, as virtual sections claimed where they're used.
+
+\\   &0000  zero page: the banks' numbers at &00-&02 (!BOOT writes them), then the pool, bar &FC
+\\   &0100  the stack's sentinel, then the stack: 32 bytes
+\\   &0121  main RAM's code: the IRQ, and what must see two banks. IRQ1V at &204 (MainVars after it),
+\\          &258 = 2 (clear on BREAK), an RTI at &D00 for stray NMIs (claimed from the filing system)
+\\   &2800  the game's variables (GameVars)
+\\   &3000  the panel: 8 rows of 512 bytes, single-buffered
+\\   &4000  playfield A: 16 rows of 512 bytes
+\\   &6000  playfield B. CHASE2 loads at &4000 or higher: main RAM's code and the panel packed by ZX02,
+\\          then its loader; all of it cleared with the playfields once the game's started
+\\   &8000  sideways RAM: each routine in the bank with the data it reads (D9); the code's bank's own
+\\          workspace at its top (CodeVars, &B500): the loader's tables, the lane tables
+
+ZA_POOL &03..&FB, &FD..&FF              ; &FC: the MOS's IRQ entry saves A there
+
+bankcode = &00                          ; the sideways RAM banks !BOOT found (it writes them itself,
+bankdata = &01                          ; as boot.6502 has them): the code's, paged in, and the data's;
+bankspeech = &02                        ; and the speech's (&FF: none)
+BanksNeeded = 2
+
+StackSentinel = &5A                     ; at &100, under the stack: changed only if it overflows
+StackTop = &0120                                    ; 32 bytes of stack, &101 up
+MainCodeOrg = &0121
+MainVarsOrg = &0206                     ; after IRQ1V, to &258: variables (MainVars)
+NmiOrg = &0D00                          ; an RTI, for stray NMIs
+GameVarsOrg = &2800
+GameVarsEnd = PanelAddr
+PanelAddr = &3000
+PlayAddrA = &4000
+PlayAddrB = &6000
+PlayBytes = PlayRows * RowBytes
+LoadFloor = PlayAddrA                   ; CHASE2 loads no lower: the panel unpacks below it
+BankLoad = &3000                        ; where !BOOT loads a bank's packed file (boot.6502's)
+SwramOrg = &8000
+SwramEnd = &C000
+CodeVarsOrg = &B500                     ; the code's bank's own workspace (CodeVars): the loader's tables,
+                                        ; the lane tables
+DataVarsOrg = &BFCB                     ; the data's bank's (DataVars): draw_objects' RowCars, the
+                                        ; sprites' mask tables
+
+ASSERT PanelAddr + PanelRows * RowBytes == PlayAddrA, "the panel ends where playfield A starts"
+ASSERT PlayAddrA + PlayBytes == PlayAddrB AND PlayAddrB + PlayBytes == &8000, "the playfields fill to &8000"
+ASSERT (PlayAddrA EOR PlayAddrB) == &2000, "a flip is EOR #&20 on a playfield address's high byte"
+ASSERT LO(PanelAddr DIV 8) == 0 AND LO(PlayAddrA DIV 8) == 0 AND LO(PlayAddrB DIV 8) == 0, "R13 is 0 for all three"
+
+SECTION MainVars, org = MainVarsOrg, guard = &258, virtual = TRUE
+ENDSECTION
+
+SECTION GameVars, org = GameVarsOrg, guard = GameVarsEnd, virtual = TRUE
+ENDSECTION
+
+SECTION CodeVars, org = CodeVarsOrg, guard = SwramEnd, virtual = TRUE
+ENDSECTION
+
+SECTION DataVars, org = DataVarsOrg, guard = SwramEnd, virtual = TRUE
+ENDSECTION

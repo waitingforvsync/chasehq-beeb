@@ -1,0 +1,75 @@
+\\ chasehq.6502 - the game's files: CHASEC and CHASED, the sideways RAM banks' images (code and data), each
+\\ packed by ZX02 (!BOOT loads each and unpacks it into a bank it found), and CHASE2, main RAM's code and
+\\ the panel, each packed by ZX02, then the loader that unpacks them into place.
+\\
+\\ No code in one bank reads the other's data or calls into it: each routine is in the bank with its
+\\ data, or in main RAM, paging in the bank whose data it reads (D9).
+
+INCLUDE "zx02.6502"                     ; the compressor, as FUNCTIONs: the sections' transform
+INCLUDE "constants.6502"
+INCLUDE "memory.6502"
+INCLUDE "macros.6502"
+
+SECTION CodeFile, filename = "CHASEC", load = &FFFF0000+BankLoad
+    SECTION SwramCode, org = SwramOrg, guard = CodeVarsOrg, transform = "zx02"
+        INCLUDE "road.6502"             ; the course and the road's geometry
+        INCLUDE "roaddraw.6502"         ; the playfield drawn from it
+        INCLUDE "text.6502"             ; the message window and the pages
+        INCLUDE "turbos.6502"           ; the turbo icons, compiled
+        INCLUDE "popup.6502"            ; the bonus popup
+        INCLUDE "../build/gen/gen.6502"     ; the pens' dithered bytes, the panel's font, the meter's bars
+        INCLUDE "../build/gen/road.6502"    ; the road's tables and the stage's streams (tools/genroad.py)
+    ENDSECTION
+ENDSECTION
+
+SECTION SpeechFile, filename = "CHASES", load = &FFFF0000+BankLoad
+    SECTION SwramSpeech, org = SwramOrg, guard = SwramEnd, transform = "zx02"
+        INCBIN "../build/gen/speech.bin"    ; the phrases (tools/genspeech.py), for a third bank if any
+    ENDSECTION
+ENDSECTION
+
+SECTION DataFile, filename = "CHASED", load = &FFFF0000+BankLoad
+    SECTION SwramData, org = SwramOrg, guard = DataVarsOrg, transform = "zx02"
+        INCLUDE "sprites.6502"          ; the plotter
+        INCLUDE "../build/gen/sprites.6502" ; and the sprites (tools/gensprites.py)
+    ENDSECTION
+ENDSECTION
+
+SECTION Chase2, org = LoadFloor, load = &FFFF0000+LoadFloor, exec = &FFFF0000+entry, filename = "CHASE2", guard = &8000
+.maincode_image
+    SECTION MainCode, org = MainCodeOrg, guard = GameVarsOrg, transform = "zx02"
+        INCLUDE "irq.6502"
+        INCLUDE "frame.6502"            ; (irq.6502's last handler falls into it)
+        INCLUDE "plotting.6502"         ; the data's bank paged in for the sprites
+        INCLUDE "../build/gen/siren.6502"   ; the sirens' palettes (tools/gendata.py)
+
+        PADTO &204
+        EQUW irq                        ; IRQ1V
+
+        ASSERT P% == MainVarsOrg, "MainVars is the gap after IRQ1V"
+        SKIPTO &258                     ; (MainVars, memory.6502)
+        EQUB 2                          ; clear memory on BREAK
+        INCLUDE "../build/gen/text.6502"    ; the text's font, faces, scripts and pages (tools/gentext.py)
+
+        PADTO NmiOrg
+        RTI                             ; stray NMIs
+        INCLUDE "sound.6502"            ; the SN76489, from the IRQ, and the speech
+        INCLUDE "../build/gen/speech.6502"  ; the phrases' places (tools/genspeech.py)
+
+        \\ the game's logic, in main RAM for now (the code's bank is full): it reads main RAM's variables and
+        \\ the code's bank's tables, which is always paged in outside the sprite stubs
+
+        INCLUDE "game.6502"
+        INCLUDE "car.6502"              ; the player's car
+        INCLUDE "traffic.6502"          ; the traffic
+        INCLUDE "panel.6502"            ; the dashboard's figures
+        INCLUDE "flow.6502"             ; the clock, the score and the stage's course
+    ENDSECTION
+
+.panel_image
+    SECTION Panel, org = PanelAddr, transform = "zx02"
+        INCBIN "../build/gen/panel.bin"
+    ENDSECTION
+
+    INCLUDE "entry.6502"
+ENDSECTION

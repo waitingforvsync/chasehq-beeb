@@ -1,0 +1,268 @@
+\\ entry.6502 - the loader, CHASE2's entry point (exhale's, as Teddy Boy's): takes the machine over, unpacks
+\\ main RAM's code and the panel, starts the rupture and the game.
+
+\\ It comes last in the file, in the playfields, so nothing it writes reaches it: main RAM's code unpacks to
+\\ &121 on (IRQ1V and &258 included) and the panel to &3000, both below the file. The game clears the
+\\ playfields, and the loader with them, before showing one.
+
+\\ Take the machine over, page in the code's bank, set up the screen, unpack the payloads, sync to vsync,
+\\ start the rupture, and run the game.
+\\
+\\ Inputs:
+\\     bankcode, bankdata: the banks
+\\
+\\ Outputs:
+\\     none: it goes on to the game
+
+.entry
+{
+    ZA_ENTRY
+    CLD
+    CLI
+
+    \\ the OS shut down
+
+    ZA_AUTO2 osbyte                     ; local: the MOS's default vectors
+
+    LDA &FFB7:STA osbyte                ; the MOS's default vector table
+    LDA &FFB8:STA osbyte+1
+    LDY #10
+    LDA (osbyte),Y:STA &20A:INY         ; BYTEV, the MOS's own
+    LDA (osbyte),Y:STA &20B
+    LDA #19:JSR &FFF4                   ; OSBYTE 19, vsync: the calls below hold interrupts off a while
+    LDA #16:LDX #0:JSR &FFF4            ; OSBYTE 16: the ADC off
+    LDA #143:LDX #12:LDY #255:JSR &FFF4     ; OSBYTE 143: NMIs claimed from the filing system
+    LDA #140:LDX #0:JSR &FFF4           ; OSBYTE 140, *TAPE: the DFS deselected
+    LDA #19:JSR &FFF4                   ; vsync before changing the CRTC
+
+    SEI
+    LDX #LO(StackTop):TXS
+    LDA #StackSentinel:STA &100         ; under the stack: changed only if it overflows
+
+    \\ the CRTC as one 39-row frame, the display off, its vsync at row 23 as the playfield's cycle has it, until
+    \\ the first interrupt splits it in two; &FE00 left on R12, for irqplay
+
+    LDX #13
+.crtc
+    STX &FE00                           ; CRTC: the register
+    LDA CrtcRegs,X:STA &FE01            ; CRTC: its value
+    DEX
+    BPL crtc
+    LDA #12:STA &FE00                   ; CRTC: R12 selected
+
+    \\ the Video ULA: MODE 2; logical colours 0-7 as the physical ones, 8-15 the same, so bit 3 of a pixel
+    \\ shows nothing (D8)
+
+    LDA #UlaMode2:STA &FE20             ; video ULA: control
+    LDX #15
+.palette
+    LDA PalVals,X:STA &FE21             ; video ULA: palette
+    DEX
+    BPL palette
+
+    \\ the code's bank paged in for good (no OS to tell); main RAM's code and the panel unpacked
+
+    LDA bankcode:STA &FE30              ; ROMSEL
+    LDA #LO(maincode_image):STA zx.src
+    LDA #HI(maincode_image):STA zx.src+1
+    LDA #LO(MainCodeOrg):STA zx.dst
+    LDA #HI(MainCodeOrg):STA zx.dst+1
+    JSR zx.unpack
+    LDA #LO(panel_image):STA zx.src
+    LDA #HI(panel_image):STA zx.src+1
+    LDA #LO(PanelAddr):STA zx.dst
+    LDA #HI(PanelAddr):STA zx.dst+1
+    JSR zx.unpack
+
+    JSR make_tables
+
+    \\ the VIAs: System VIA T1 free-running, its only interrupt; the keyboard scanned by hand; the ACIA reset,
+    \\ in case a *FX2 left its interrupts on
+
+    LDA #&7F:STA &FE4E:STA &FE6E        ; system, user VIAs: IER, every interrupt off
+    STA &FE4D:STA &FE6D                 ; IFR: every flag cleared
+    STA &FE43                           ; system VIA: DDRA, PA0-6 out, PA7 in (the keyboard)
+    LDA #&C0:STA &FE4E                  ; system VIA: IER, T1 only
+    LDA #&40:STA &FE4B                  ; system VIA: ACR, T1 free-running
+    LDA #&0F:STA &FE42                  ; system VIA: DDRB, PB0-3 drive the addressable latch
+    LDX #&03:STX &FE40                  ; addressable latch: keyboard auto-scan off
+    INX:STX &FE4C                       ; system VIA: PCR 4, CA1 on vsync's falling edge
+    STX &FE40:INX:STX &FE40             ; latch bits 4 and 5 low: the 16K wrap (never reached)
+    LDA #3:STA &FE08                    ; ACIA: master reset
+
+    \\ the rupture's and the keys' state: playfield A shown, no request, no keys
+
+    LDA #0:STA reqshow:STA irqphase:STA irqframes:STA keys
+
+    \\ synced to vsync (hexwab's and tricky's): to within ~10 cycles, then exactly by waiting a cycle short
+    \\ of a frame until the vsync's flag isn't set
+
+    LDA #2:STA &FE4D                    ; system VIA: IFR, CA1 cleared
+.waitforvsync
+    BIT &FE4D                           ; system VIA: IFR
+    BEQ waitforvsync
+IF HI(P%) <> HI(P% + 17)
+    JMP syncloop                        ; the loop all in one page
+    ALIGN &100
+ENDIF
+.syncloop
+    STA &FE4D       ; 6
+    LDX #209        ; 2
+.outerloop
+    LDY #37         ; 2
+.innerloop
+    DEY             ; 2
+    BNE innerloop   ; 3/2 (5 * 37 + 2 - 1 = 186)
+    DEX             ; 2
+    BNE outerloop   ; 3/2 ((186 + 2 + 3) * 209 + 2 - 1 = 39,920)
+    BIT &FE4D       ; 6
+    BNE syncloop    ; 3: 39,935, a cycle short of a frame, until no vsync came
+    ASSERT HI(syncloop) == HI(P%), "the sync loop runs in one page"
+
+    \\ T1 to the playfield's top, irqplay's (the BVS assembled to it): the start-up frame ends, and the first
+    \\ playfield cycle starts, 16 rows after the vsync's, which is 2 lines before its flag. Less the latency to
+    \\ the handler (the timer's setting below 18, IRQ 7, the MOS's entry 19, BIT 6, BVS 3), and two lines late,
+    \\ so R4 is always written in the cycle it's for. Then the playfield's top to its end
+
+    Latency = (18 + 7 + 19 + 6 + 3 + 1) DIV 2
+    InitialTimer = ((FrameRows - PlayVSyncPos) * 8 - VSyncPulseWidth + 2) * 64 - Latency
+    ASSERT FrameRows - PlayVSyncPos == PlayCycleRows - PlayVSyncPos + PanelRows, "16 rows, as the steady state's"
+
+    LDA #LO(InitialTimer):STA &FE44     ; system VIA: T1C-L
+    LDA #HI(InitialTimer):STA &FE45     ; T1C-H: started
+    LDA #LO(ShownPeriod):STA &FE46      ; T1L-L: then the playfield's top to its end
+    LDA #HI(ShownPeriod):STA &FE47      ; T1L-H
+    CLI
+    JMP game
+}
+
+\\ The code's bank's tables (CodeVars): the quarter squares, the road's cells and columns, the backdrop's
+\\ columns, and the lane tables' entries past those made each frame, off the screen; the sprites' masks.
+\\
+\\ Inputs:
+\\     the code's bank paged in
+\\
+\\ Outputs:
+\\     SqLo, SqHi, Col8, E6Of, R6Of, SrcLo, SrcHi; Lane1Hi-Lane3Hi from LaneEntries on; MaskTab, OrTab;
+\\     RowCars clear
+\\     A, X, Y: corrupted
+
+.make_tables
+{
+    ZA_AUTO2 sq                         ; local: n * n / 4
+    ZA_AUTO2 at                         ; local: a backdrop column's address
+
+    \\ the quarter squares, by (n + 1)^2 / 4 = n^2 / 4 + (n + 1) DIV 2
+
+    LDA #0:STA sq:STA sq+1
+    TAX
+.squares
+    LDA sq:STA SqLo,X
+    LDA sq+1:STA SqHi,X
+    TXA:LSR A:ADC #0                    ; (n + 1) DIV 2
+    ADC sq:STA sq                       ; (C clear)
+    BCC @+
+    INC sq+1
+.@
+    INX:BNE squares
+.squares2
+    LDA sq:STA SqLo+256,X
+    LDA sq+1:STA SqHi+256,X
+    TXA:LSR A:ADC #128                  ; (n + 1) DIV 2, n 256 + X (C clear after, bar the last)
+    ADC sq:STA sq
+    BCC @+
+    INC sq+1
+.@
+    INX:BNE squares2
+
+    \\ the cells and columns by x: Col8 ((x DIV 4) AND 31) * 8, R6Of LO(Runner) + x DIV 8 * 6, E6Of 6 more
+
+.cells
+    TXA:AND #&7C:ASL A:STA Col8,X
+    TXA:LSR A:LSR A:LSR A
+    ASL A:STA at                        ; (at: free until the backdrop's)
+    ASL A:ADC at                        ; (C clear)
+    ADC #LO(Runner):STA R6Of,X
+    ADC #6:STA E6Of,X
+    INX:BNE cells
+
+    \\ the backdrop's columns: i 0-43 is column i MOD 22, 24 bytes a column
+
+    LDY #0
+.wrap
+    LDA #LO(BackPlanar):STA at
+    LDA #HI(BackPlanar):STA at+1
+    LDX #22
+.columns
+    LDA at:STA SrcLo,Y
+    LDA at+1:STA SrcHi,Y
+    LDA at:CLC:ADC #24:STA at
+    BCC @+
+    INC at+1
+.@
+    INY
+    DEX:BNE columns
+    CPY #44:BNE wrap
+
+    \\ the sprites' masked bytes, in the data's bank: &80 + c the left pixel transparent over the right in
+    \\ logical c, &88 + c the other way round; the screen's bits kept, and the opaque pixel's
+
+    LDA bankdata:STA &FE30              ; ROMSEL: the data's bank
+    LDX #7
+.masks
+    LDA #&AA:STA MaskTab,X              ; (the left pixel's bits)
+    LDA #&55:STA MaskTab+8,X
+    LDA RightBits,X:STA OrTab,X
+    ASL A:STA OrTab+8,X
+    DEX:BPL masks
+
+    \\ draw_objects' RowCars clear, in the data's bank too (it leaves it so each frame)
+
+    LDA #0
+    LDX #20
+.rowcars
+    STA RowCars,X
+    DEX:BPL rowcars
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+
+    \\ the lane tables' entries past those road_edges makes: never on the screen
+
+    LDA #&80
+    LDX #EdgeEntries-1
+.lanes
+    STA Lane1Hi,X:STA Lane2Hi,X:STA Lane3Hi,X
+    DEX
+    CPX #LaneEntries-1:BNE lanes
+    RTS
+}
+
+.CrtcRegs
+    EQUB 127                            ; R0: horizontal total
+    EQUB ScreenColumns                  ; R1: horizontal displayed
+    EQUB ScreenHSyncPos                 ; R2: hsync position
+    EQUB 8 + (VSyncPulseWidth << 4)     ; R3: sync widths
+    EQUB FrameRows - 1                  ; R4: vertical total (the start-up frame's)
+    EQUB 0                              ; R5: vertical total adjust
+    EQUB PlayRows                       ; R6: vertical displayed (the panel's cycle never reaches it)
+    EQUB PlayVSyncPos                   ; R7: vsync position (nor this)
+    EQUB R8Off                          ; R8: interlace, display off
+    EQUB 7                              ; R9: scanlines a row, less one
+    EQUB 32                             ; R10: cursor start (hidden)
+    EQUB 7                              ; R11: cursor end
+    EQUB HI(PanelAddr DIV 8)            ; R12: start, high
+    EQUB LO(PanelAddr DIV 8)            ; R13: start, low (0 for good)
+
+.PalVals
+    EQUB (0..15) * 16 + (((0..15) AND 7) EOR 7) ; logical c: physical c AND 7 (the ULA takes it EOR 7)
+
+.RightBits                              ; logical c's bits as a right pixel
+    EQUB RightPixel(0..7)
+
+\\ The decompressor, for main RAM's code and the panel
+
+.zx
+{
+    INCLUDE "dzx02.6502"
+}
+
+ASSERT P% <= &8000, "CHASE2 reaches &8000"

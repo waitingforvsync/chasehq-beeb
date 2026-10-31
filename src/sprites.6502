@@ -1,0 +1,497 @@
+\\ sprites.6502 - the sprites (tools/gensprites.py) and the plotter that reads them, in the data's bank: main
+\\ RAM's plot_sprite and plot_objects page the bank in to call it (D9).
+
+\\ A sprite is a column of bytes at a time, each column's lines top first; a tiled sprite's columns carry their
+\\ first 7 lines again after their last, so 8 lines on from any of its rows wrap (SprStep: a column's bytes less
+\\ 8). A byte below &40 is wholly opaque, the screen's own; &FF is wholly transparent; &80 + c has the left
+\\ pixel transparent over the right in logical c, &88 + c the other way round (D8). The screen never gets bit 3
+\\ of a pixel: logical 8-15 are the sirens' colours (tools/gendata.py).
+
+SECTION DataVars
+.RowCars                                ; draw_objects': each row's cars, slot k at bit k + 2 (clear
+    SKIP 21                             ; but in draw_objects: make_tables clears it)
+.MaskTab                                ; a masked byte (&80-&8F, read at MaskTab-&80) -> the screen's
+    SKIP 16                             ; bits to keep: its transparent pixel's (made by make_tables)
+.OrTab                                  ; and its opaque pixel's bits
+    SKIP 16
+ENDSECTION
+ASSERT LO(MaskTab) >= &80 AND HI(MaskTab) == HI(OrTab + 15), "MaskTab-&80,X and OrTab-&80,X read in a page"
+
+\\ Plot a sprite whole, all its rows from its bottom: sprite_draw with no rows skipped.
+\\
+\\ Inputs:
+\\     A: the sprite
+\\     sprite_draw.col: its first byte column, signed
+\\     sprite_draw.bottom: its bottom line, 0-127, all of it on the screen
+\\     back: the playfield
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.sprite_plot
+{
+    TAX
+    LDA SprH,X:STA sprite_draw.lines
+    LDA #0:STA sprite_draw.skip
+    TXA                                 ; (on into sprite_draw)
+}
+
+\\ Plot a sprite, clipped: columns off either side left out, rows hidden under a crest skipped from its
+\\ bottom; a tiled sprite (h + 7 bytes a column) repeats its rows up from the bottom for as many as asked. It
+\\ goes a band at a time, bottom up: a character row's lines, every column, Y 8 a column on from the band's
+\\ first step in both the sprite's pointer and the screen's.
+\\
+\\ Inputs:
+\\     A: the sprite
+\\     col: its first byte column, signed
+\\     bottom: its bottom row's line, 0-127
+\\     skip: its rows hidden below that, from its bottom
+\\     lines: the rows to draw, 1-128, no higher than the playfield's top (the caller cuts them), and no
+\\          more than are left above skip unless it's tiled
+\\     back: the playfield
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.sprite_draw
+{
+    ZA_AUTO1 col, bottom, skip, lines   ; in: where, and which rows
+    ZA_AUTO2 src, scr                   ; local: a band's pointers, its first column's lowest line less 7
+    ZA_AUTO2 under                      ; local: the first column's bytes, less 8
+    ZA_AUTO2 corner                     ; local: the band's character row at the first column
+    ZA_AUTO1 h                          ; local: the sprite's rows
+    ZA_AUTO1 low, y1                    ; local: the band's lowest row (its index, top first) and line
+    ZA_AUTO1 left                       ; local: the rows left to draw, less 1
+    ZA_AUTO1 d                          ; local: the band's lines less 1
+    ZA_AUTO1 t                          ; local: columns cut, the first column, then the band's top row
+
+    TAX
+    LDA SprH,X:STA h
+    LDA SprLo,X:STA under               ; (less 8)
+    LDA SprHi,X:STA under+1
+
+    \\ the columns on the screen: Y of them from screen column A
+
+    LDA col:BMI cut
+    CMP #64:BCS gone                    ; (right of the screen)
+    EOR #&FF:SEC:ADC #64                ; the columns to the screen's right edge
+    CMP SprW,X:BCC @+
+    LDA SprW,X
+.@
+    TAY
+    LDA col
+    BPL placed                          ; always
+.gone
+    RTS
+.cut
+    CLC:ADC SprW,X                      ; the columns left of it cut
+    BEQ gone:BMI gone
+    TAY
+    LDA col:STA t
+.cutting
+    LDA SprStep,X:CLC:ADC #8            ; a column's bytes (C set if the step's negative)
+    CLC:ADC under:STA under
+    BCC @+
+    INC under+1
+.@
+    INC t:BNE cutting
+    LDA #0                              ; (the first column on the screen: 0)
+.placed
+    STA t
+    TYA:ASL A:ASL A:ASL A:STA colend+1  ; Y at the band's end: 8 a column
+    CPY #2:BCC narrow                   ; (one column: no step to the next)
+    LDA SprStep,X:STA dl+1              ; a column's bytes less Y's 8
+    CMP #&80                            ; (C: fewer than 8)
+    LDA #&90:LDY #&E6                   ; BCC, INC zp: 8 or more
+    BCC @+
+    LDA #&B0:LDY #&C6                   ; BCS, DEC zp: fewer (no carry is a borrow)
+.@
+    STA carry:STY carried
+.narrow
+    LDA bottom:LSR A:LSR A:AND #&FE     ; the bottom row's first page, less the playfield's: 2 a row
+    ORA back:STA corner+1
+    LDA t:ASL A:ASL A:ASL A             ; the column's offset in its half-row (C: the second half)
+    STA corner
+    BCC @+
+    INC corner+1
+.@
+
+    \\ the rows: the bottom band from bottom's line (its pointer at the row less 7 - y1: the bands run to
+    \\ step 7); the bottom row's index
+
+    LDA bottom:AND #7:STA y1
+    ORA #&F8                            ; y1 - 8
+    SEC:ADC corner:STA scr
+    LDA corner+1:ADC #&FF:STA scr+1     ; (the borrow)
+    LDX lines:DEX:STX left
+    LDA skip                            ; the bottom row's index, top first: h - 1 - skip MOD h
+.mod
+    CMP h:BCC @+
+    SBC h                               ; (C set)
+    BCS mod                             ; always
+.@
+    EOR #&FF:ADC h:STA low              ; (C clear)
+
+    \\ a band: its lines from y1 up to its character row's top, or as many as are left; its first step 7 - d;
+    \\ the sprite's pointer so step 7 reads the lowest row, its top row's index wrapped into the sprite (tiled)
+
+.band
+    LDA left:CMP y1:BCC @+              ; (the last band)
+    LDA y1
+.@
+    STA d
+    EOR #7:TAY                          ; Y: the first step
+    STY realign+1
+    LDA StepLo,Y:STA entry+1
+    LDA low:SEC:SBC d
+    BCS @+
+.wrap
+    ADC h:BCC wrap
+.@
+    STA t                               ; (C set)
+    ADC d                               ; + d + 1
+    ADC under:STA src                   ; (C clear)
+    LDA under+1:ADC #0:STA src+1
+    LDA t:SBC #0                        ; (C clear) the next band's lowest row: the one above
+    BCS @+
+    ADC h                               ; (wrapped)
+.@
+    STA low
+    JMP entry
+
+    \\ the band's columns, each from its first step to step 7: a byte below &40 stored, &FF skipped, the
+    \\ rest masked; the sprite's pointer stepped by a column's bytes less Y's 8
+
+    INPAGE coreend - core
+.core
+FOR k = 0..3
+    ASSERT P% == core + 17 * k
+    CMP #&FF:BEQ steps + 7 * k + 6      ; (wholly transparent)
+    TAX
+    LDA (scr),Y
+    AND MaskTab-&80,X
+    ORA OrTab-&80,X
+    STA (scr),Y
+    BCC steps + 7 * k + 6               ; always (C clear: the compare of a byte under &FF)
+NEXT
+.banddone
+    LDA left:CLC:SBC d:BPL above        ; less the band's lines
+    RTS
+.above
+    STA left
+    LDA #7:STA y1
+    DEC corner+1:DEC corner+1           ; the character row above, whole
+    LDA corner:STA scr
+    LDA corner+1:STA scr+1
+    JMP band
+.entry
+    JMP steps                           ; self-modified: the band's first step
+    ZA_CANJUMP steps + 7 * (0..7)
+.steps
+FOR k = 0..7
+    ASSERT P% == steps + 7 * k
+    LDA (src),Y
+    IF k < 4
+        BMI core + 17 * k
+    ELSE
+        BMI specials + 17 * (k - 4)
+    ENDIF
+    STA (scr),Y
+    INY
+NEXT
+.colend
+    CPY #0:BEQ banddone                 ; self-modified: 8 a column, the band's last done
+    TYA
+.realign
+    ADC #0                              ; self-modified: the band's first step (C clear: Y below that)
+    TAY
+    LDA src
+.dl
+    ADC #0                              ; self-modified: a column's bytes less 8 (C clear)
+    STA src
+.carry
+    BCC entry                           ; self-modified: BCC, or BCS for fewer than 8
+.carried
+    INC src+1                           ; self-modified: INC, or DEC
+    BNE entry                           ; always (the bank's pages)
+.specials
+FOR k = 4..7
+    ASSERT P% == specials + 17 * (k - 4)
+    CMP #&FF:BEQ steps + 7 * k + 6      ; (wholly transparent)
+    TAX
+    LDA (scr),Y
+    AND MaskTab-&80,X
+    ORA OrTab-&80,X
+    STA (scr),Y
+    BCC steps + 7 * k + 6               ; always (C clear: the compare of a byte under &FF)
+NEXT
+.coreend
+    ASSERT HI(core) == HI(coreend - 1), "the plotter's core in a page"
+}
+
+.StepLo                                 ; the plotter's steps
+    EQUB LO(sprite_draw.steps + 7 * (0..7))
+
+\\ The roadside objects, rows 20 to 1, far to near: each row's right object, then its left (the CPC's
+\\ &238C's). An object stands on its row's line, or the crest's in front where that's higher; its parts are
+\\ stacked up from there, tiled ones as tall as their share of the row's scale.
+\\
+\\ Inputs:
+\\     RoadWindow, RoadSeg, RoadY, RowXR, RowXL, RowScale
+\\     back: the playfield
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.draw_objects
+{
+    ZA_AUTO1 r                          ; local: the row, 20 down to 1
+    ZA_AUTO1 yb                         ; local: the lowest line of the rows from 1 out to here
+    ZA_AUTO1 cars                       ; local: the row's cars left, a bit each
+
+    \\ RowYB: the line a row's objects stand on, the higher of its own and those in front (a crest hides
+    \\ what's behind it)
+
+    LDA #255:STA yb
+    LDX #1
+.crest
+    LDA RoadY,X:CLC:ADC #32
+    CMP yb:BCS @+
+    STA yb
+.@
+    LDA yb:STA RowYB,X
+    INX:CPX #21:BNE crest
+
+    \\ RowCars: each row's cars, slot k at bit k + 2 (slot 5 out of an ASL first); each row's left clear for
+    \\ the next frame
+
+    LDX #MaxObjects-1
+.slots
+    LDY ObjRow,X:BEQ @+                 ; (not drawn)
+    LDA RowCars,Y:ORA SlotBit,X:STA RowCars,Y
+.@
+    DEX:BPL slots
+
+    LDA #20:STA r
+.row
+    LDY r:LDA RowCars,Y:BEQ objects     ; the cars on the row first, slot 5 down
+    STA cars
+    LDA #0:STA RowCars,Y
+    LDX #MaxObjects-1
+.car
+    ASL cars:BCC @+
+    STX carslot
+    JSR one_car
+    LDX carslot
+.@
+    DEX
+    LDA cars:BNE car
+.objects
+    LDA RoadSeg:CLC:ADC #WinObjects-1:ADC r:TAY
+    LDA RoadWindow,Y:BEQ @+             ; the right side's object
+    LDX #0:JSR one_object
+.@
+    LDA RoadSeg:CLC:ADC #WinObjects+&20-1:ADC r:TAY
+    LDA RoadWindow,Y:BEQ @+             ; the left side's
+    LDX #10:JSR one_object
+.@
+    DEC r:BNE row
+    RTS
+
+    \\ an object: A its id, X 0 right or 10 left, r its row
+
+.one_object
+    ZA_AUTO1 side, kind, ya, ycrest, scale, stack, yoff
+    ZA_AUTO1 anchor, at                 ; local: the side's edge at the row; a left part's x + 4w
+    ZA_AUTO2 parts                      ; local: the part records
+    ZA_AUTO1 n, height                  ; local: the part's sprite and rows
+
+    STX side
+    CLC:ADC side:TAX
+    LDA ObjKind,X:BEQ gone
+    CMP #4:BEQ gone                     ; (the gantry: not yet)
+    STA kind
+    TXA:ASL A:STA n                     ; (side * 10 + id) * 10 + size - 1
+    ASL A:ASL A:ADC n                   ; (C clear: under 256)
+    STA n
+    LDX r:CPX #10:BCC @+
+    LDX #10
+.@
+    DEX:TXA:CLC:ADC n:TAY
+    LDA ObjPartLo,Y:STA parts
+    LDA ObjPartHi,Y:STA parts+1
+    LDY r
+    LDA RoadY,Y:CLC:ADC #32:STA ya
+    LDA RowYB,Y:STA ycrest
+    LDA RowScale,Y:STA scale
+    LDX side:BNE leftside
+    LDA RowXRLo,Y:STA anchor
+    LDA RowXRHi,Y:BEQ anchored
+.gone
+    RTS
+.leftside
+    LDA RowXLLo,Y:STA anchor
+    LDA RowXLHi,Y:BNE gone
+.anchored
+    LDA #0:STA stack:STA yoff
+    LDA kind:CMP #1:BNE parted
+    LDA r:CMP #16:BCS gone              ; raised: rows 1-15 only, scale less a quarter up
+    LDA scale:LSR A:LSR A
+    EOR #&FF:SEC:ADC scale:STA yoff
+
+    \\ a part: its column (x, 0-127 from gensprites: right, the edge + x; left, the edge + 8 - x - 4w, both
+    \\ in quarter-bytes, 9 bits enough: what wraps is off the screen either way), its rows, its place up the
+    \\ stack
+
+.parted
+    LDY #2:LDA (parts),Y
+    CMP #1:BEQ gone                     ; (the end of the list)
+    STA kind
+    LDY #0:LDA (parts),Y:STA n
+    TAX
+    LDA SprH,X:STA height
+    LDY #1
+    LDA side:BNE leftx
+    LDA (parts),Y
+    CLC:ADC anchor                      ; (C: bit 8)
+    BNE @+
+    BCC offscreen                       ; (exactly 0: the CPC doesn't draw it)
+.@
+    ROR A:LSR A:STA sprite_draw.col
+    BPL placed                          ; always (0-85)
+.offscreen
+    LDA #64:STA sprite_draw.col         ; (off the screen: not drawn, though it stacks)
+    BNE placed                          ; always
+.leftx
+    LDA anchor:CMP #256 - 8:BCS offscreen   ; (the edge + 8 carrying: the CPC doesn't draw it)
+    LDA SprW,X:ASL A:ASL A              ; x + 4w (C clear: w 16 or less)
+    ADC (parts),Y:STA at
+    LDA anchor:SEC:SBC at               ; the edge less that, 9 bits signed (C its sign, inverted)
+    ROR A:EOR #&80                      ; / 2
+    CMP #&80:ROR A                      ; / 4
+    CLC:ADC #2:STA sprite_draw.col      ; (+ 8)
+.placed
+
+    \\ its rows: fixed, or tiled to k * scale less the stack (at least 1)
+
+    LDA kind:CMP #3:BCC rowsset
+    SBC #3:TAX                          ; (C set)
+    JSR tile_height
+    SEC:SBC stack
+    BEQ @+
+    BCS tiledset
+.@
+    LDA #1
+.tiledset
+    STA height
+
+    \\ where it stands: on the row's line less the stack (and a raised object's lift); behind a crest its
+    \\ hidden rows are skipped and it stands on the crest
+
+.rowsset
+    LDA stack:CLC:ADC yoff              ; (the part's lift)
+    EOR #&FF:SEC:ADC ya                 ; the row's line less that
+    LDX #0
+    CMP ycrest:BEQ @+:BCC @+            ; (the crest no higher)
+    SBC ycrest:TAX                      ; (C set) the rows below the crest
+    LDA ycrest
+.@
+    STA sprite_draw.bottom
+    STX sprite_draw.skip
+    LDA height:SEC:SBC sprite_draw.skip
+    BEQ stacked:BCC stacked
+    STA sprite_draw.lines
+    LDA sprite_draw.bottom:BMI stacked  ; (above the playfield)
+    CMP sprite_draw.lines:BCS @+
+    ADC #1:STA sprite_draw.lines        ; (C clear) the rows to the playfield's top
+.@
+    LDA n:JSR sprite_draw
+
+.stacked
+    LDA stack:CLC:ADC height:STA stack
+    LDA parts:CLC:ADC #3:STA parts
+    BCC @+
+    INC parts+1
+.@
+    JMP parted
+}
+
+\\ A car, at its projected place, clipped.
+\\
+\\ Inputs:
+\\     X: its slot
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.one_car
+{
+    LDA ObjCol,X:STA sprite_draw.col
+    LDA ObjBottom,X:STA sprite_draw.bottom
+    LDA #0:STA sprite_draw.skip
+    LDY ObjSprite,X:LDA CarSprite,Y
+    TAY
+    LDA SprH,Y
+    CMP sprite_draw.bottom:BCC @+       ; no higher than the playfield's top
+    LDA sprite_draw.bottom:ADC #0       ; (C set: + 1)
+.@
+    STA sprite_draw.lines
+    TYA:JMP sprite_draw
+}
+
+ZA_AUTO1 carslot                        ; local to draw_objects: the slot being drawn
+
+\\ A tiled part's height from the row's scale: k * scale for its kind (3-10: 1.5, 0.5, 1.125, 0.375, 0.75,
+\\ 0.25, 1, 2).
+\\
+\\ Inputs:
+\\     X: the kind less 3
+\\     draw_objects.scale
+\\
+\\ Outputs:
+\\     A: the height
+\\     X, Y: corrupted
+
+.tile_height
+{
+    ZA_AUTO1 half, eighth               ; local: scale / 2, scale / 8
+
+    LDA draw_objects.scale:LSR A:STA half
+    LSR A:LSR A:STA eighth
+    LDA TileLo,X:STA go+1
+    LDA TileHi,X:STA go+2
+.go
+    JMP &FFFF                           ; self-modified: the kind's
+    ZA_CANJUMP k15, k05, k1125, k0375, k075, k025, k1, k2
+.k15
+    LDA half:CLC:ADC draw_objects.scale:RTS
+.k05
+    LDA half:RTS
+.k1125
+    LDA eighth:CLC:ADC draw_objects.scale:RTS
+.k0375
+    LDA half:SEC:SBC eighth:RTS
+.k075
+    LDA half:LSR A:CLC:ADC half:RTS
+.k025
+    LDA half:LSR A:RTS
+.k1
+    LDA draw_objects.scale:RTS
+.k2
+    LDA draw_objects.scale:ASL A:RTS
+}
+
+.TileLo
+    EQUB LO(tile_height.k15), LO(tile_height.k05), LO(tile_height.k1125), LO(tile_height.k0375)
+    EQUB LO(tile_height.k075), LO(tile_height.k025), LO(tile_height.k1), LO(tile_height.k2)
+.TileHi
+    EQUB HI(tile_height.k15), HI(tile_height.k05), HI(tile_height.k1125), HI(tile_height.k0375)
+    EQUB HI(tile_height.k075), HI(tile_height.k025), HI(tile_height.k1), HI(tile_height.k2)
+
+SECTION GameVars
+.RowYB                                  ; each row's line for its objects (crests in front)
+    SKIP 21
+ENDSECTION
+
+.SlotBit                                ; slot k's bit in RowCars
+    EQUB 1 << ((0..MaxObjects-1) + 2)

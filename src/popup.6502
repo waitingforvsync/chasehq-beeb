@@ -1,0 +1,107 @@
+\\ popup.6502 - the bonus popup (the CPC's &20F2, &21C2): a score added by an overtake, a ram or the wrong
+\\ fork, its figures in the panel's font at row 3 line 2, cells 14-25, shown every other loop for 12 loops
+\\ (the CPC's is in one of its two buffers only). In the code's bank.
+
+PopupTop = 3 * 8 + 2                    ; the panel's line its glyphs start on
+PopupCol = 14                           ; and their first cell
+PopupCells = 12                         ; the cells it clears: 6 glyphs
+PopupLoops = 12
+FUNCTION PopupLine(i) = PanelAddr + ((PopupTop + i) DIV 8) * RowBytes + ((PopupTop + i) MOD 8) + PopupCol * 8
+
+SECTION GameVars
+.PopupGlyphs                            ; its figures, 0-9
+    SKIP PopupCells DIV 2
+.PopupCount                             ; and how many
+    SKIP 1
+.PopupTimer                             ; loops left (0: none)
+    SKIP 1
+ENDSECTION
+
+\\ A popup of a score added: its figures with no leading zero, then two zeros a place. It takes no ADC or SBC,
+\\ so it can be called in decimal mode, before the score's added.
+\\
+\\ Inputs:
+\\     A: the BCD byte added (not 0)
+\\     X: its place: 1 the hundreds, 2 the ten thousands
+\\
+\\ Outputs:
+\\     PopupGlyphs, PopupCount, PopupTimer
+\\     A, X: preserved; Y: corrupted
+
+.popup_score
+{
+    ZA_AUTO1 v, n                       ; local: the byte; the places left
+
+    STA v:STX n
+    LDY #0
+    LSR A:LSR A:LSR A:LSR A:BEQ @+      ; (no leading zero)
+    STA PopupGlyphs:INY
+.@
+    LDA v:AND #15:STA PopupGlyphs,Y:INY
+    LDA #0
+.zero
+    STA PopupGlyphs,Y:INY
+    STA PopupGlyphs,Y:INY
+    DEC n:BNE zero
+    STY PopupCount
+    LDA #PopupLoops:STA PopupTimer
+    LDA v
+    RTS
+}
+
+\\ The popup's loop: its place cleared, then on odd loops left its glyphs drawn; at 0 it's gone.
+\\
+\\ Inputs:
+\\     PopupTimer, PopupGlyphs, PopupCount
+\\
+\\ Outputs:
+\\     the panel; PopupTimer
+\\     A, X, Y: corrupted
+
+.popup_update
+{
+    ZA_AUTO1 k                          ; local: the glyph
+
+    LDA PopupTimer:BNE @+
+    RTS
+.@
+    DEC PopupTimer
+    JSR popup_clear
+    LDA PopupTimer:LSR A:BCS @+
+    RTS                                 ; (shown on odd loops)
+.@
+    LDA #0:STA k
+.glyph
+    LDY k:LDA PopupGlyphs,Y
+    CLC:ADC #GlyphDigits
+    ASL A:ASL A:ASL A:ASL A:TAY         ; (16 bytes a glyph: its left column's 8 lines, then its right's)
+    LDA k:ASL A:ASL A:ASL A:ASL A:TAX   ; (2 cells a glyph)
+    FOR i = 0..7
+        LDA PanelGlyphs + i,Y:STA PopupLine(i),X
+        LDA PanelGlyphs + 8 + i,Y:STA PopupLine(i) + 8,X
+    NEXT
+    INC k
+    LDA k:CMP PopupCount:BEQ @+
+    JMP glyph
+.@
+    RTS
+}
+
+\\ The popup's place cleared (to black, as the CPC's).
+\\
+\\ Outputs:
+\\     the panel
+\\     A, X: corrupted
+
+.popup_clear
+{
+    LDX #PopupCells * 8
+.cell
+    LDA #0
+    FOR i = 0..7
+        STA PopupLine(i) - 8,X
+    NEXT
+    TXA:SEC:SBC #8:TAX
+    BNE cell
+    RTS
+}

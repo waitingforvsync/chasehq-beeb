@@ -1,0 +1,525 @@
+\\ text.6502 - the message window and the pages (docs/cpc-text.md): the partner's and Nancy's lines on the
+\\ panel a glyph a loop, with their faces and static between; the pages' boxes of text over the playfield.
+\\ In the code's bank; their data (build/gen/text.6502) is in main RAM, &259 on.
+
+MsgIdle = 0                             ; the window's states (the CPC's &17C1): busy, bit 6 (BIT's V)
+MsgRunning = &40                        ; and closing, bit 7 (N), for msg_request's and msg_update's tests
+MsgOpening = &41
+MsgClosing = &80
+
+LineTop = MsgLineTop + MsgLineCell * 8      ; column 0's glyph lines 0-3: row 6's lines 4-7
+LineBottom = MsgLineBottom + MsgLineCell * 8    ; and 4-7: row 7's lines 0-3
+ASSERT LO(LineTop) < 256 - 16 AND LO(LineBottom) < 256 - 16, "a glyph's offsets fit in Y"
+ASSERT MsgLineCell == 1 AND MsgColumns == 31, "msg_clear's cells: 1-31, and 31 on from each"
+
+ZA_AUTO2 msgscript                      ; the script's next byte
+ZA_AUTO2 msgline                        ; the line's next glyph
+
+SECTION GameVars
+.MsgState
+    SKIP 1
+.MsgPrio                                ; the message's priority (kept after it ends)
+    SKIP 1
+.MsgTimer                               ; static's loops left (the CPC's &17C0)
+    SKIP 1
+.MsgPause                               ; a finished line's loops left (&17B7)
+    SKIP 1
+.MsgCol                                 ; the next glyph's column, 0-30
+    SKIP 1
+.MsgLeft                                ; the line's glyphs left
+    SKIP 1
+.PageAt                                 ; the page shown (the CPC's &136B)
+    SKIP 2
+.PageLoop                               ; its loop, 1 its first
+    SKIP 1
+.PageOn                                 ; not 0 while it's shown
+    SKIP 1
+ENDSECTION
+
+\\ The game's start: no message, no page.
+\\
+\\ Outputs:
+\\     MsgState, MsgPrio, PageOn
+\\     A: corrupted
+
+.text_new_game
+{
+    LDA #MsgIdle:STA MsgState
+    STA MsgPrio
+    STA PageOn
+    RTS
+}
+
+\\ A stage's start (the CPC's &15B8): the line cleared and the face blanked, a message carrying on; no page and
+\\ no popup.
+\\
+\\ Outputs:
+\\     the panel; MsgCol, PageOn, PopupTimer
+\\     A, X, Y: corrupted
+
+.text_stage
+{
+    LDA #0:STA PageOn
+    STA PopupTimer
+    JSR popup_clear
+    JSR msg_clear
+    JMP msg_blank
+}
+
+\\ Ask for a message (the CPC's &1DB4): refused while one's opening or printing with a priority as high;
+\\ otherwise it starts at once (static first), whatever was showing.
+\\
+\\ Inputs:
+\\     A: its priority
+\\     X, Y: its script's address, low and high
+\\
+\\ Outputs:
+\\     the window's state
+\\     A: corrupted
+
+.msg_request
+{
+    BIT MsgState:BVC take               ; (idle or closing: anything's taken)
+    CMP MsgPrio:BEQ refused:BCC refused
+.take
+    STA MsgPrio
+    STX msgscript:STY msgscript+1
+    LDA #0:STA MsgPause
+    LDA #MsgOpening:STA MsgState
+.refused
+    RTS
+}
+
+\\ A message's request: its script and priority the generator's (MsgRam, MsgRamPrio ...)
+
+MACRO MESSAGE script, prio
+    LDX #LO(script):LDY #HI(script)
+    LDA #prio:JSR msg_request
+ENDMACRO
+
+\\ The message window's loop (the CPC's &1DD4), after its requests: opening, the line cleared and static; 4
+\\ loops on, the script read (its choices, its speaker's face) and the first line begun; a glyph a loop, a
+\\ finished line staying 10 loops; then the next line, a new speaker (static again) or the close (static,
+\\ then the face blanked). Drawn straight onto the panel, which is single-buffered.
+\\
+\\ Inputs:
+\\     the window's state
+\\
+\\ Outputs:
+\\     the panel; the window's state; the generator (the choices, the static)
+\\     A, X, Y: corrupted
+
+.msg_update
+{
+    LDA MsgState:BEQ done
+    BMI closing
+    CMP #MsgOpening:BNE running
+    LDA #MsgRunning:STA MsgState
+    JMP msg_static                      ; (the line cleared, static, 4 loops)
+.running
+    LDA MsgTimer:BEQ untimed
+    DEC MsgTimer:BNE done
+    JSR msg_segment                     ; (static done: the speaker's face, and the first line)
+    JMP msg_first
+.untimed
+    LDA MsgPause:BEQ msg_glyph
+    DEC MsgPause:BNE done
+    JMP msg_next                        ; (the line's stayed: the next, a new speaker, or the close)
+.closing
+    DEC MsgTimer:BNE done
+    LDA #MsgIdle:STA MsgState
+    JMP msg_blank
+.done
+    RTS
+}
+
+\\ The line's next glyph, at the column: its 16 bytes, Font1's planes, through two pointers with one low
+\\ byte, 16c (rows 6 and 7 differ by whole pages); the line's last starts its pause.
+
+.msg_glyph
+{
+    ZA_AUTO2 top, bot                   ; local: the column in rows 6 and 7, less the offsets in Y
+
+    LDY #0:LDA (msgline),Y:TAX
+    INC msgline:BNE @+
+    INC msgline+1
+.@
+    LDA MsgCol:INC MsgCol
+    ASL A:ASL A:ASL A:ASL A             ; 16c's low byte, C its high (c < 32)
+    STA top:STA bot
+    LDA #HI(LineTop):ADC #0:STA top+1
+    ADC #HI(LineBottom) - HI(LineTop):STA bot+1 ; (C clear)
+    FOR i = 0..15
+        LDA Font1 + i * Glyphs1,X
+        IF (i AND 7) < 4
+            LDY #LO(LineTop) + i:STA (top),Y
+        ELSE
+            LDY #LO(LineBottom) + i:STA (bot),Y
+        ENDIF
+    NEXT
+    DEC MsgLeft:BNE @+
+    LDA #MsgPauseLoops:STA MsgPause     ; (the line's last)
+.@
+    RTS
+}
+
+\\ The line at the script: its glyphs, the script on past them; the line cleared and its first glyph drawn
+\\ (a segment's first line has no &FF/&FE test, as the CPC's &1E3F).
+
+.msg_first
+{
+    LDA msgscript:STA msgline
+    LDA msgscript+1:STA msgline+1
+    INC msgline:BNE @+
+    INC msgline+1
+.@
+    LDY #0:LDA (msgscript),Y:STA MsgLeft
+    SEC:ADC msgscript:STA msgscript     ; (past its count and glyphs)
+    BCC @+
+    INC msgscript+1
+.@
+    JSR msg_clear
+    JMP msg_glyph
+}
+
+\\ The script's next byte after a line: &FF the close; &FE a new speaker (static, then its script); else
+\\ another line.
+
+.msg_next
+{
+    LDY #0:LDA (msgscript),Y
+    CMP #&FF:BEQ close
+    CMP #&FE:BNE msg_first
+    INY:LDA (msgscript),Y:TAX
+    INY:LDA (msgscript),Y
+    STA msgscript+1:STX msgscript
+    JMP msg_static
+.close
+    LDA #MsgClosing:STA MsgState
+    JMP msg_static
+}
+
+\\ A segment of the script: its choices, a random number each (the CPC's &1E49: under &55 the first, under
+\\ &AA the second, else the third), then its speaker's face (falling into msg_face).
+
+.msg_segment
+{
+.choice
+    LDY #0:LDA (msgscript),Y:CMP #&FC:BNE face
+    JSR random
+    LDY #1
+    CMP #&55:BCC @+
+    LDY #3
+    CMP #&AA:BCC @+
+    LDY #5
+.@
+    LDA (msgscript),Y:TAX
+    INY:LDA (msgscript),Y
+    STA msgscript+1:STX msgscript
+    BNE choice                          ; always (scripts are above page 0)
+.face
+    TAX                                 ; (0 the stage's, 1 Nancy, 2 the partner)
+    INC msgscript:BNE msg_face
+    INC msgscript+1
+}
+
+\\ A face into the face box: 5 rows of 64 bytes.
+\\
+\\ Inputs:
+\\     X: the face (0 the stage's, none in stage 1; 1 Nancy; 2 the partner)
+
+.msg_face
+{
+    ZA_AUTO2 from, at                   ; local: the face's row; the box's
+    ZA_AUTO1 r                          ; local: rows left
+
+    LDA FaceLo,X:STA from
+    LDA FaceHi,X:STA from+1
+    LDA #LO(MsgFaceAt):STA at
+    LDA #HI(MsgFaceAt):STA at+1
+    LDA #MsgFaceRows:STA r
+.row
+    LDY #63
+.byte
+    LDA (from),Y:STA (at),Y
+    DEY:BPL byte
+    LDA from:CLC:ADC #64:STA from
+    BCC @+
+    INC from+1
+.@
+    LDA at+1:CLC:ADC #HI(RowBytes):STA at+1
+    DEC r:BNE row
+    RTS
+}
+
+\\ The face box blanked (the CPC's &1EE2).
+
+.msg_blank
+{
+    LDA #0
+    LDY #63
+.byte
+    FOR r = 0..MsgFaceRows - 1
+        STA MsgFaceAt + r * RowBytes,Y
+    NEXT
+    DEY:BPL byte
+    RTS
+}
+
+\\ The line cleared and static in the face box for 4 loops (the CPC's &1EB9): two random numbers for each of
+\\ its 320 bytes, the first's bits 2-3 its pixels (the second was the CPC's other buffer's), so the generator
+\\ steps as the CPC's. The steps are random's, inline: s0 - &8D and s1 + 3 only enter as their sum, which
+\\ steps by &76, so its bit 0, b, never changes. With h the sum less b, RRCA(s2) + RRCA(sum) is s2 + h
+\\ rotated right as 9 bits, its bit 7 flipped where s2's bit 0 isn't b (the patched branch: BCC for b = 0,
+\\ BCS for 1). After the 640, s0 and s1 have each moved &80.
+
+.msg_static
+{
+    ZA_AUTO1 h, s2                      ; local: the generator: the sum less b (the last step's); s2
+
+    LDA #MsgStaticLoops:STA MsgTimer
+    JSR msg_clear
+    LDA Rng:CLC:ADC Rng+1:TAX
+    AND #&FE:STA h
+    TXA:LSR A                           ; (C = b)
+    LDA #&90:BCC @+                     ; BCC
+    LDA #&B0                            ; BCS
+.@
+    STA flip1:STA flip2
+    LDA #HI(MsgFaceAt - &C0):STA store+2
+    LDA Rng+2:STA s2
+.row
+    LDX #&C0                            ; (the row's 64 bytes: X up to 0)
+.byte
+    LDA h:CLC:ADC #&76                  ; the first step's h
+    CLC:ADC s2:ROR A                    ; (C = s2's bit 0)
+.flip1
+    BCC flipped1                        ; self-modified: BCC or BCS
+    SAME_PAGE flipped1
+    EOR #&80
+.flipped1
+    STA s2                              ; (the number)
+    AND #&0C:TAY                        ; (bits 2-3)
+    LDA MsgStaticBytes,Y                ; (4 apart: read in place)
+.store
+    STA MsgFaceAt - &C0,X               ; self-modified: the row's high byte
+    LDA h:CLC:ADC #2 * &76:STA h        ; the second step's
+    CLC:ADC s2:ROR A
+.flip2
+    BCC flipped2                        ; self-modified: BCC or BCS
+    SAME_PAGE flipped2
+    EOR #&80
+.flipped2
+    STA s2
+    INX:BNE byte
+    SAME_PAGE byte
+    LDA store+2:CLC:ADC #HI(RowBytes):STA store+2
+    CMP #HI(MsgFaceAt - &C0 + MsgFaceRows * RowBytes):BNE row
+    LDA Rng:EOR #&80:STA Rng
+    LDA Rng+1:EOR #&80:STA Rng+1
+    LDA s2:STA Rng+2
+    RTS
+}
+
+\\ The message line cleared to white (lines 52-59: row 6's 4-7, row 7's 0-3; cells 1-62), the column 0: cells
+\\ 1-31 and 32-62 together, X their low cell's offset.
+
+.msg_clear
+{
+    LDA #0:STA MsgCol
+    LDX #MsgLineCell * 8
+    CLC
+.cell
+    LDA #TextWhite
+    FOR i = 0..3
+        STA MsgLineTop + i,X
+        STA MsgLineBottom + 4 + i,X
+        STA MsgLineTop + MsgColumns * 8 + i,X   ; (31 cells on)
+        STA MsgLineBottom + 4 + MsgColumns * 8 + i,X
+    NEXT
+    TXA:ADC #8:TAX                      ; (C clear till X passes 255)
+    BNE cell
+    RTS
+}
+
+\\ Show a page (the CPC's &139F): from its first loop; a request starts it again.
+\\
+\\ Inputs:
+\\     X, Y: the page's address, low and high
+\\
+\\ Outputs:
+\\     PageAt, PageLoop, PageOn
+\\     A: corrupted
+
+.page_request
+{
+    STX PageAt:STY PageAt+1
+    LDA #0:STA PageLoop
+    LDA #1:STA PageOn
+    RTS
+}
+
+MACRO PAGE page
+    LDX #LO(page):LDY #HI(page)
+    JSR page_request
+ENDMACRO
+
+\\ The page's loop (the CPC's &12CF, &136A): the entries that have appeared drawn into the back playfield
+\\ (redrawn whole by the road each loop); after its last loop, gone. An entry (&13B2) is an opaque white box:
+\\ a left column, a right one (its left pixel white), 2 cells a glyph between, a pixel cut from each corner.
+\\ Size 1 is 10 lines, its 8 and one above and below; size 2 is 16 over two rows, the glyph's lines 1-6
+\\ doubled. The rows' pointers have low bytes 0, or 1 or 7 to reach a line on or line 7 with the same Y: Y
+\\ walks along them, 8 a cell, and a page crossed moves them all.
+\\
+\\ Inputs:
+\\     back: the playfield drawn; the page
+\\
+\\ Outputs:
+\\     the playfield; PageLoop, PageOn
+\\     A, X, Y: corrupted
+
+.page_draw
+{
+    ZA_AUTO2 at                         ; local: the page's entry, then its next glyph
+    ZA_AUTO2 mid, dn, up7               ; local: the rows: the text's first, below it, above it at line 7
+    ZA_AUTO2 mid1, dn1, dn7             ; local: size 2's: mid and dn a line on, dn at line 7
+    ZA_AUTO1 n, y                       ; local: the glyphs left; the cell
+
+    LDA PageOn:BNE @+
+    RTS
+.@
+    INC PageLoop
+    LDY #0:STY mid:STY dn
+    LDA PageAt:STA at
+    LDA PageAt+1:STA at+1
+    LDA (at),Y:CMP PageLoop:BNE first
+    STY PageOn                          ; (its last loop: drawn, then gone)
+.first
+    INY:STY mid1:STY dn1
+    LDY #7:STY up7:STY dn7
+    INC at:BNE entry
+    INC at+1
+.entry
+    LDY #0:LDA (at),Y:BEQ done          ; (the entries' end)
+    LDA PageLoop:CMP (at),Y:BCS @+
+.done
+    RTS                                 ; (not yet: nor any after it)
+.@
+    INY:LDA (at),Y:TAX                  ; the size
+    INY:LDA (at),Y:STA y                ; the place
+    INY:LDA (at),Y:CLC:ADC back:STA mid+1:STA mid1+1
+    ADC #HI(RowBytes):STA dn+1:STA dn1+1:STA dn7+1  ; (C clear: no wrap)
+    SBC #2 * HI(RowBytes) - 1:STA up7+1 ; (C clear)
+    INY:LDA (at),Y:STA n                ; the length
+    LDA at:CLC:ADC #5:STA at            ; (on to its glyphs)
+    BCC @+
+    INC at+1
+.@
+    LDY y
+    DEX:BEQ size1
+    JMP size2
+
+    \\ size 1: the left column (lines -1 and 8 its right pixel white)
+
+.size1
+    LDA (dn),Y:AND #TextKeepL:ORA #TextWhiteR:STA (dn),Y
+    LDA (up7),Y:AND #TextKeepL:ORA #TextWhiteR:STA (up7),Y
+    LDA #TextWhite
+    FOR i = 0..6
+        STA (mid),Y:INY
+    NEXT
+    STA (mid),Y
+    INY:BNE glyph1
+    JSR bump1
+.glyph1
+    LDX #0:LDA (at,X):ZA_INDEXEDBY 0
+    TAX
+    INC at:BNE fetched1
+    INC at+1
+.fetched1
+    FOR c = 0..1
+        LDA #TextWhite:STA (dn),Y:STA (up7),Y   ; lines 8 and -1
+        FOR i = 0..7
+            LDA Font1 + (c * 8 + i) * Glyphs1,X:STA (mid),Y:INY
+        NEXT
+        BNE @+
+        JSR bump1
+.@
+    NEXT
+    DEC n:BEQ right1
+    JMP glyph1
+.right1
+    FOR i = 0..7
+        LDA (mid),Y:AND #TextKeepR:ORA #TextWhiteL:STA (mid),Y
+        IF i < 7
+            INY
+        ENDIF
+    NEXT
+    JMP entry                           ; (at: the next entry)
+
+    \\ size 2: rows mid (lines 0-7) and dn (8-15); the left column (lines 0-1 and 14-15 its right pixel
+    \\ white)
+
+.size2
+    FOR j = 0..7
+        IF j < 2
+            LDA (mid),Y:AND #TextKeepL:ORA #TextWhiteR:STA (mid),Y
+            LDA #TextWhite:STA (dn),Y
+        ELIF j < 6
+            LDA #TextWhite:STA (mid),Y:STA (dn),Y
+        ELSE
+            LDA #TextWhite:STA (mid),Y
+            LDA (dn),Y:AND #TextKeepL:ORA #TextWhiteR:STA (dn),Y
+        ENDIF
+        INY
+    NEXT
+    BNE glyph2
+    JSR bump2
+.glyph2
+    LDX #0:LDA (at,X):ZA_INDEXEDBY 0
+    TAX
+    INC at:BNE fetched2
+    INC at+1
+.fetched2
+    FOR c = 0..1                        ; lines: white, 0, 1, 1, 2, 2, 3, 3 | 4, 4, 5, 5, 6, 6, 7, white
+        LDA #TextWhite:STA (mid),Y:STA (dn7),Y
+        LDA Font1 + (c * 8 + 4) * Glyphs1,X:STA (dn),Y:STA (dn1),Y
+        LDA Font1 + (c * 8 + 0) * Glyphs1,X:STA (mid1),Y
+        INY:INY
+        FOR i = 1..3
+            LDA Font1 + (c * 8 + i) * Glyphs1,X:STA (mid),Y:STA (mid1),Y
+            IF i < 3
+                LDA Font1 + (c * 8 + 4 + i) * Glyphs1,X:STA (dn),Y:STA (dn1),Y
+            ELSE
+                LDA Font1 + (c * 8 + 7) * Glyphs1,X:STA (dn),Y
+            ENDIF
+            INY:INY
+        NEXT
+        BNE @+
+        JSR bump2
+.@
+    NEXT
+    DEC n:BEQ right2
+    JMP glyph2
+.right2
+    FOR j = 0..7
+        IF j >= 2
+            LDA (mid),Y:AND #TextKeepR:ORA #TextWhiteL:STA (mid),Y
+        ENDIF
+        IF j < 6
+            LDA (dn),Y:AND #TextKeepR:ORA #TextWhiteL:STA (dn),Y
+        ENDIF
+        IF j < 7
+            INY
+        ENDIF
+    NEXT
+    JMP entry                           ; (at: the next entry)
+
+    \\ Y's crossed a page: the rows' pointers on one (size 2's three more first)
+
+.bump2
+    INC mid1+1:INC dn1+1:INC dn7+1
+.bump1
+    INC mid+1:INC dn+1:INC up7+1
+    RTS
+}

@@ -1,0 +1,61 @@
+\\ turbos.6502 - the turbo icons, compiled from their bytes. In the code's bank.
+
+\\ The turbo icons (the CPC's &216B): one for each turbo left, at the playfield's bottom left (panel.6502's
+\\ TurboLine, TurboCol), the one running (the last) flashing. The icon is compiled from its bytes (TurboIcon,
+\\ tools/gensprites.py), a character row at a time: an opaque byte stored, a masked one ANDed and ORed in (as
+\\ the plotter's MaskTab and OrTab), a transparent one left out.
+\\
+\\ Inputs:
+\\     back: the playfield drawn
+\\     CarTurbos, CarTurbo
+\\
+\\ Outputs:
+\\     the playfield; TurboBlink
+\\     A, X, Y: corrupted
+
+TurboTop = TurboLine - 15               ; the icon's top line
+FUNCTION TurboMask(b) = (b < &88) * &AA + (b >= &88) * &55 ; a masked byte's screen bits kept
+FUNCTION TurboOr(b) = RightPixel(b AND 7) << (b >= &88) ; and its opaque pixel's
+
+.draw_turbos
+{
+    ZA_AUTO1 n                          ; local: icons left
+    ZA_AUTO2 at                         ; local: the icon's character row, at its first column
+
+    LDA TurboBlink:EOR #1:STA TurboBlink
+    LDX CarTurbos:BEQ done
+    LDA CarTurbo:BEQ @+
+    LDA TurboBlink:BNE @+
+    DEX:BNE @+                          ; (the running one off every other loop)
+.done
+    RTS
+.@
+    STX n
+    LDA #TurboCol*8:STA at
+.icon
+    LDA back:CLC:ADC #(TurboTop DIV 8)*2:STA at+1 ; (512 bytes a row)
+FOR row = (TurboTop DIV 8)..(TurboLine DIV 8)
+    FOR c = 0..3
+        FOR j = 0..15
+            line = TurboTop + j
+            b = TurboIcon[c * 16 + j]
+            IF line DIV 8 == row AND b < &40
+                LDY #c * 8 + (line AND 7):LDA #b:STA (at),Y
+            ELIF line DIV 8 == row AND b <> &FF
+                LDY #c * 8 + (line AND 7):LDA (at),Y
+                AND #TurboMask(b):ORA #TurboOr(b):STA (at),Y
+            ENDIF
+        NEXT
+    NEXT
+    IF row < TurboLine DIV 8
+        INC at+1:INC at+1               ; the row below
+    ENDIF
+NEXT
+    DEC n:BEQ @+
+    LDA at:CLC:ADC #TurboStep*8:STA at  ; the next icon's (within the row's first page)
+    JMP icon
+.@
+    RTS
+}
+ASSERT (TurboCol + TurboStep * 3) * 8 <= 256 AND TurboTop >= 0, "the icons in their rows' first pages"
+ASSERT LEN(TurboIcon) == 64, "the icon 4 x 16"

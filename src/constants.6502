@@ -1,0 +1,21 @@
+\\ constants.6502 - the screen's geometry and the rupture's timing, derived: the CPC's 64 bytes by 24 rows,
+\\ a single-buffered panel of 8 rows over a double-buffered playfield of 16 (D3, P1).
+
+ScreenColumns = 64                      ; bytes a line, 128 MODE 2 pixels: the CPC's width
+RowBytes = ScreenColumns * 8            ; a character row: 512 bytes
+PanelRows = 8                           ; the dashboard: 64 lines
+PlayRows = 16                           ; the playfield: 128 lines
+ScreenRows = PanelRows + PlayRows
+FrameRows = 39                                      ; 312 lines
+PlayCycleRows = FrameRows - PanelRows   ; the playfield's cycle: it, the border and the vsync
+
+ScreenHSyncPos = 98 - (80 - ScreenColumns) DIV 2 ; centred as exhale centres a narrower screen: 90
+ScreenVSyncPos = 35 - (32 - ScreenRows) DIV 2 ; the vsync's row in the frame: 31
+PlayVSyncPos = ScreenVSyncPos - PanelRows   ; and in the playfield's cycle: 23
+VSyncPulseWidth = 2                     ; lines (R3's top nybble)
+
+ASSERT PanelRows + PlayCycleRows == FrameRows, "the two cycles make a frame"
+
+UlaMode2 = &F4                          ; the Video ULA's control register: MODE 2
+R8On = &C0                              ; CRTC R8: the display on, no cursor, not interlaced
+R8Off = &F0                             ; and off

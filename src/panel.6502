@@ -1,0 +1,331 @@
+\\ panel.6502 - the dashboard's figures (docs/cpc-logic.md, The dashboard): drawn straight into the panel,
+\\ which is shown from one buffer, each only when it changes; and the damage meter, in the playfield. In the
+\\ code's bank.
+
+\\ A glyph is 2 bytes by 8 lines: its two character cells, 16 bytes in a row in the panel.
+
+GlyphHi = 0                             ; the font's glyphs: HI, LO (two each), then the digits
+GlyphLo = 2
+GlyphDigits = 4
+SpeedRow = 1                            ; where the figures go: character row, byte column
+SpeedCol = 36
+GearRow = 4
+GearCol = 28
+TimeRow = 1
+TimeCol = 30
+ScoreRow = 1
+ScoreCol = 12
+DistRow = 4
+DistCol = 34
+ShownTime = 4                           ; PanelShown: the speed's 3 digits, the gear, then the time's 2,
+ShownCount = 18                         ; the score's 8 and DIST's 4
+
+MeterBottom = 88                        ; the damage meter: playfield lines 88 up to 28, bytes 2-3
+MeterLines = 61
+
+StageCol = 23                           ; the stage's number: byte 23, from line 36 (row 4, line 4)
+StageLine = 36
+TurboLine = 124                         ; the turbo icons' bottom line in the playfield
+TurboCol = 1                            ; and their columns: 1, 5, 9
+TurboStep = 4
+
+SECTION GameVars
+.Stage                                  ; the stage, 1-5
+    SKIP 1
+.TurboBlink                             ; flips each loop: the turbo in use flashes
+    SKIP 1
+.PanelShown                             ; the figures shown (&FF: none yet)
+    SKIP ShownCount
+.MeterHits                              ; the hits the meter's column was built for (&FF: none yet)
+    SKIP 1
+.MeterL                                 ; its column, from the bottom: byte 2's lines
+    SKIP MeterLines
+.MeterR                                 ; and byte 3's
+    SKIP MeterLines
+ENDSECTION
+
+\\ Start the panel's figures: none shown, so all are drawn next; the meter's column to build; the stage's
+\\ number drawn (the CPC's &21A1: its digit at row 4, line 4, byte 23, straddling two rows).
+\\
+\\ Inputs:
+\\     Stage
+\\
+\\ Outputs:
+\\     PanelShown, MeterHits; the panel
+\\     A, X, Y: corrupted
+
+.panel_start
+{
+    ZA_AUTO2 at                         ; local: the glyph's line in the panel
+    ZA_AUTO1 ln                         ; local: its line
+
+    LDA #&FF
+    STA MeterHits
+    LDX #ShownCount-1
+.clear
+    STA PanelShown,X
+    DEX:BPL clear
+
+    LDA Stage:CLC:ADC #GlyphDigits
+    ASL A:ASL A:ASL A:ASL A:TAX         ; (16 bytes a glyph: its left column's 8 lines, then its right's)
+    LDA #StageLine:STA ln
+.line
+    LSR A:LSR A:LSR A:ASL A             ; the row's first page: 2 a row
+    ADC #HI(PanelAddr):STA at+1         ; (C clear)
+    LDA ln:AND #7:ORA #LO(StageCol*8):STA at
+    LDY #0
+    LDA PanelGlyphs,X:STA (at),Y
+    LDY #8                              ; (the next column: 8 bytes on)
+    LDA PanelGlyphs+8,X:STA (at),Y
+    INX
+    INC ln
+    LDA ln:CMP #StageLine+8:BNE line
+    RTS
+}
+
+\\ The speed, as the CPC shows it (speed * 82 / 100, 0-419), the gear, the time, the score and DIST, each
+\\ digit or word redrawn only when it's changed.
+\\
+\\ Inputs:
+\\     RoadSpeed, CarGear, Seconds, Score, Dist
+\\
+\\ Outputs:
+\\     the panel, PanelShown
+\\     A, X, Y: corrupted
+
+.panel_update
+{
+    ZA_AUTO2 v                          ; local: speed * 82, then what's left of it
+    ZA_AUTO2 t                          ; local: speed shifted up
+    ZA_AUTO1 place                      ; local: the digit's place, 0-2
+    ZA_AUTO1 lo                         ; local: a subtraction's low byte
+    ZA_AUTO2 bcd                        ; local: a BCD figure
+    ZA_AUTO1 col, row                   ; local: its next digit's place
+    ZA_AUTO1 shadow                     ; local: its next digit's shadow
+    ZA_AUTO1 figure_at, byte_at         ; local: the figure, its byte
+    ZA_AUTO1 pair                       ; local: the byte's two digits
+
+    \\ speed * 82 = speed * 2 + speed * 16 + speed * 64
+
+    LDA RoadSpeed:ASL A:STA t
+    LDA RoadSpeed+1:ROL A:STA t+1
+    LDA t:STA v
+    LDA t+1:STA v+1
+    ASL t:ROL t+1:ASL t:ROL t+1:ASL t:ROL t+1
+    LDA v:CLC:ADC t:STA v
+    LDA v+1:ADC t+1:STA v+1
+    ASL t:ROL t+1:ASL t:ROL t+1
+    LDA v:CLC:ADC t:STA v
+    LDA v+1:ADC t+1:STA v+1
+
+    \\ its hundreds, tens and units of v / 100: the 10,000s, 1,000s and 100s in v, by subtraction
+
+    LDA #0:STA place
+.digit
+    LDX #0
+.count
+    LDY place
+    LDA v:SEC:SBC Hundreds,Y:STA lo
+    LDA v+1:SBC Hundreds+3,Y
+    BCC counted
+    STA v+1
+    LDA lo:STA v
+    INX
+    BNE count                           ; always
+.counted
+    TXA:LDY place
+    CMP PanelShown,Y:BEQ same
+    STA PanelShown,Y
+    CLC:ADC #GlyphDigits
+    STA draw_glyph.glyph
+    TYA:ASL A:ADC #SpeedCol:TAX         ; (C clear)
+    LDY #SpeedRow
+    JSR draw_glyph
+.same
+    INC place
+    LDA place:CMP #3:BNE digit
+
+    \\ the gear: HI or LO, when it changes
+
+    LDA CarGear:CMP PanelShown+3:BEQ done
+    STA PanelShown+3
+    LDA #GlyphLo:LDX CarGear:BEQ @+
+    LDA #GlyphHi
+.@
+    STA draw_glyph.glyph
+    LDX #GearCol:LDY #GearRow
+    JSR draw_glyph
+    INC draw_glyph.glyph
+    LDX #GearCol+2:LDY #GearRow
+    JSR draw_glyph
+.done
+
+    \\ the time, the score and DIST, from their BCD: their shadows follow each other in PanelShown
+
+    LDA #ShownTime:STA shadow
+    LDX #Figures-1
+.figure
+    STX figure_at
+    LDA FigureLo,X:STA bcd
+    LDA FigureHi,X:STA bcd+1
+    LDA FigureCol,X:STA col
+    LDA FigureRow,X:STA row
+    LDY FigureBytes,X
+.byte
+    DEY
+    STY byte_at
+    LDA (bcd),Y:STA pair
+    LSR A:LSR A:LSR A:LSR A
+    JSR one_digit
+    LDA pair:AND #15
+    JSR one_digit
+    LDY byte_at:BNE byte
+    LDX figure_at:DEX:BPL figure
+    RTS
+
+    \\ a digit A at col and shadow, which move on
+
+.one_digit
+    LDX shadow
+    CMP PanelShown,X:BEQ shown
+    STA PanelShown,X
+    CLC:ADC #GlyphDigits:STA draw_glyph.glyph
+    LDX col:LDY row
+    JSR draw_glyph
+.shown
+    INC shadow
+    INC col:INC col
+    RTS
+}
+
+Figures = 3                                 ; the BCD figures, in their shadows' order backwards
+.FigureLo
+    EQUB LO(Dist), LO(Score), LO(Seconds)
+.FigureHi
+    EQUB HI(Dist), HI(Score), HI(Seconds)
+.FigureBytes
+    EQUB 2, 4, 1
+.FigureCol
+    EQUB DistCol, ScoreCol, TimeCol
+.FigureRow
+    EQUB DistRow, ScoreRow, TimeRow
+
+.Hundreds                                   ; 10,000, 1,000, 100: low bytes, then high
+    EQUB LO(10000), LO(1000), LO(100), HI(10000), HI(1000), HI(100)
+
+\\ A glyph into the panel at a character row and byte column.
+\\
+\\ Inputs:
+\\     glyph: the glyph
+\\     X: the byte column, 0-62
+\\     Y: the character row, 0-7
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.draw_glyph
+{
+    ZA_AUTO1 glyph                      ; in: the glyph
+    ZA_AUTO2 at                         ; local: its first cell
+
+    TYA:ASL A:ADC #HI(PanelAddr):STA at+1   ; the row: 2 pages each (C clear: rows < 8)
+    TXA:ASL A:ASL A:ASL A:STA at        ; the column: 8 bytes each
+    BCC @+
+    INC at+1                            ; (the row's second page)
+.@
+    LDA glyph:ASL A:ASL A:ASL A:ASL A       ; 16 bytes a glyph
+    ORA #15:TAX
+    LDY #15
+.copy
+    LDA PanelGlyphs,X:STA (at),Y
+    DEX
+    DEY:BPL copy
+    SAME_PAGE copy
+    RTS
+}
+
+\\ The meter's column for A hits: from the bottom, 3 lines a hit (a black line, then two of the bar, its
+\\ colour by the hits / 5, its bytes by the line's parity), the rest black.
+\\
+\\ Inputs:
+\\     A: the hits
+\\
+\\ Outputs:
+\\     MeterHits, the column
+\\     A, X, Y: corrupted
+
+.build_meter
+{
+    ZA_AUTO1 bars                       ; local: the bar's first byte in MeterBars
+    ZA_AUTO1 n                          ; local: the hits' lines
+    ZA_AUTO1 phase                      ; local: the line in its hit, 0 the black one
+
+    STA MeterHits
+    LDX #0
+.level
+    CMP #5:BCC @+
+    SBC #5                              ; (C set)
+    INX:INX:INX:INX
+    CPX #16:BCC level                   ; (the fifth colour from 20 on)
+.@
+    STX bars
+    LDA MeterHits:ASL A:ADC MeterHits:STA n ; (C clear: under 128 hits)
+    LDX #0:STX phase
+.line
+    LDA #0:STA MeterL,X:STA MeterR,X
+    CPX n:BCS next
+    LDY phase:BEQ next
+    TXA:AND #1:ASL A:ADC bars:TAY       ; (C clear) the line's parity's bytes
+    LDA MeterBars,Y:STA MeterL,X
+    LDA MeterBars+1,Y:STA MeterR,X
+.next
+    LDY phase:INY
+    CPY #3:BCC @+
+    LDY #0
+.@
+    STY phase
+    INX:CPX #MeterLines:BNE line
+    SAME_PAGE line
+    RTS
+}
+
+\\ The damage meter, once the criminal's sighted (the CPC's &14EE): its column copied into the back playfield
+\\ (the road's drawn over it each frame), built again when the hits change.
+\\
+\\ Inputs:
+\\     back: the playfield drawn
+\\     CrimSighted, CrimRams
+\\
+\\ Outputs:
+\\     the playfield; MeterHits, the column
+\\     A, X, Y: corrupted
+
+.draw_meter
+{
+    ZA_AUTO2 at, at2                    ; local: bytes 2 and 3 in the line's character row
+
+    LDA CrimSighted:BEQ done
+    LDA ArrestState:CMP #3:BCS done     ; (gone once the car's pulled in)
+    LDA CrimRams:CMP MeterHits:BEQ @+
+    JSR build_meter
+.@
+    LDA back:CLC:ADC #(MeterBottom DIV 8)*2 ; (512 bytes a row)
+    STA at+1:STA at2+1
+    LDA #2*8:STA at
+    LDA #3*8:STA at2
+    LDY #MeterBottom AND 7
+    LDX #0
+.copy
+    LDA MeterL,X:STA (at),Y
+    LDA MeterR,X:STA (at2),Y
+    INX:CPX #MeterLines:BEQ done
+    DEY:BPL copy
+    SAME_PAGE copy
+    LDY #7                              ; (the row above)
+    DEC at+1:DEC at+1
+    DEC at2+1:DEC at2+1
+    BNE copy                            ; always
+    SAME_PAGE copy
+.done
+    RTS
+}

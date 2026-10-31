@@ -1,0 +1,823 @@
+\\ traffic.6502 - the traffic (docs/cpc-logic.md, Traffic): spawned ahead at random, in lanes at fixed speeds,
+\\ moving with the road; the roadside obstacles (cones, barriers), standing till they're hit and fly; projected
+\\ each frame to a line and column for the object pass. In main RAM for now (decisions P6).
+
+\\ Slots 1-5 (slot 0 is the criminal's). A slot's distance ahead is ObjD, in 1/256ths of a segment from the
+\\ start of the car's segment: its row (the CPC's depth) the whole segments rounded up, its fraction the rest
+\\ counted back from that row.
+
+MaxObjects = 6
+SpawnRow = 21                           ; where traffic appears, just past the 20 rows drawn
+GoneRow = 23                            ; and where it's dropped, ahead
+
+SECTION GameVars
+.ObjType                                ; 0 empty, &80 traffic, &FF the criminal; an obstacle &40
+    SKIP MaxObjects                     ; standing, &41 landed, &42 flying
+.ObjDLo                                 ; the distance ahead
+    SKIP MaxObjects
+.ObjDHi
+    SKIP MaxObjects
+.ObjVel                                 ; its speed, 1/256ths of a segment a loop
+    SKIP MaxObjects
+.ObjVelHi
+    SKIP MaxObjects
+.ObjWidth                               ; across, quarter-bytes (for collisions)
+    SKIP MaxObjects
+.ObjHeight                              ; a flying obstacle's height, lines
+    SKIP MaxObjects
+.ObjFlight                              ; its place in ObstacleHeights
+    SKIP MaxObjects
+.ObjFlightLeft                          ; its loops of flight left
+    SKIP MaxObjects
+.ObjFlip                                ; flips each loop it flies: the sprite mirrored
+    SKIP MaxObjects
+.ObjLat                                 ; across the road, 0-255, left to right
+    SKIP MaxObjects
+.ObjLane                                ; traffic: its lane, 1-4
+    SKIP MaxObjects
+.ObjTarget                              ; and the lane it's moving to
+    SKIP MaxObjects
+.ObjModel                               ; the car, 1-4 (the stage's; 0 the criminal's); 5, 6 the obstacles
+    SKIP MaxObjects
+.ObjRow                                 ; projected: its row, 1-20 if drawn (0 not)
+    SKIP MaxObjects
+.ObjXLo                                 ; its left edge, quarter-bytes, signed (for collisions)
+    SKIP MaxObjects
+.ObjXHi
+    SKIP MaxObjects
+.ObjCol                                 ; its first byte column, signed
+    SKIP MaxObjects
+.ObjBottom                              ; its bottom line
+    SKIP MaxObjects
+.ObjSprite                              ; its sprite, by its size
+    SKIP MaxObjects
+.SpawnCount                             ; segments to the next spawn
+    SKIP 1
+.Overtakes                              ; traffic passed
+    SKIP 1
+.Rng                                    ; the CPC's generator's three bytes (&37AA-&37AC)
+    SKIP 3
+ENDSECTION
+
+\\ Start the stage's traffic: none.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     the slots empty, the spawn count, the generator seeded as at the CPC's power-on
+\\     A, X: corrupted
+
+.traffic_start
+{
+    LDA #0
+    LDX #MaxObjects-1
+.clear
+    STA ObjType,X:STA ObjRow,X:STA ObjVelHi,X:STA ObjHeight,X:STA ObjFlip,X
+    DEX:BPL clear
+    STA Overtakes
+    LDA #TrafficGap:STA SpawnCount
+    LDA #&7B:STA Rng
+    LDA #&2D:STA Rng+1
+    LDA #&E9:STA Rng+2
+    RTS
+}
+
+\\ The next random number (the CPC's &37AD): s0 - &8D, s1 + 3, then their sum rotated right, plus s2 rotated
+\\ right, kept as s2.
+\\
+\\ Inputs:
+\\     Rng
+\\
+\\ Outputs:
+\\     A: the number
+\\     Rng
+\\     X, Y: preserved
+
+.random
+{
+    LDA Rng:SEC:SBC #&8D:STA Rng
+    LDA Rng+1:CLC:ADC #3:STA Rng+1
+    CLC:ADC Rng
+    LSR A:BCC @+
+    ORA #&80                            ; (rotated)
+.@
+    STA rngt
+    LDA Rng+2:LSR A:BCC @+
+    ORA #&80
+.@
+    CLC:ADC rngt:STA Rng+2
+    RTS
+}
+
+ZA_AUTO1 rngt                           ; local to random: the sum rotated
+
+\\ The traffic's loop: spawn when the count's run down; move each car on by its speed and back by the
+\\ segments entered; drop those past the rows ahead, or no further on than the car (an overtake); within 20
+\\ rows keep each to the lanes the road allows.
+\\
+\\ Inputs:
+\\     RoadEntered, RoadFrac, RoadSeg, the window's flags, CrimSighted
+\\
+\\ Outputs:
+\\     the slots, SpawnCount, Overtakes
+\\     A, X, Y: corrupted
+
+.traffic_update
+{
+    ZA_AUTO1 near                       ; local: an overtake's distance, at most
+
+    \\ spawning: the count less the segments entered; a car when it's run out
+
+    LDA RoadEntered:BEQ moving
+    LDA ArrestState:ORA RoadHints+1:BNE @+  ; (none in the arrest, or a no-traffic zone: the CPC's &304A)
+    LDA SpawnCount:SEC:SBC RoadEntered:STA SpawnCount
+    BCS @+
+    JSR spawn
+.@
+    JSR obstacles                       ; (the CPC's &3305: a segment entered)
+
+    \\ moving: on by its speed, back a segment for each entered
+
+.moving
+    LDA RoadFrac:AND #&E0:STA near      ; (the CPC's fraction, counted back, past NOT(RoadFrac AND &E0))
+    LDX #MaxObjects-1
+.move
+    LDA ObjType,X:BEQ next
+    LDA ObjDLo,X:CLC:ADC ObjVel,X:STA ObjDLo,X
+    LDA ObjDHi,X:ADC ObjVelHi,X:SEC:SBC RoadEntered:STA ObjDHi,X
+    BMI behind
+    BNE @+
+    LDA near:CMP ObjDLo,X:BCS behind    ; (no further on than the car)
+.@
+    LDA ObjDLo,X:CMP #1:LDA ObjDHi,X:ADC #0 ; its row: the whole segments rounded up
+    CMP #GoneRow:BCS gone
+    CMP #20:BCS next
+    LDY ObjType,X:BPL @+
+    JSR keep_lane                       ; (traffic; C clear)
+    JMP next
+.@
+    JSR fly                             ; (an obstacle)
+.next
+    DEX:BNE move
+    RTS
+.behind
+    LDA ObjType,X:BPL gone              ; (traffic is overtaken; an obstacle just goes)
+    INC Overtakes                       ; (it wraps: the flow counts its changes)
+.gone
+    LDA #0:STA ObjType,X
+    BEQ next                            ; always
+}
+
+\\ Spawn a car: the count reloaded (25 more once the criminal's sighted), and a car in the first free slot of
+\\ 1-5 unless 3 are ahead of it. Its lane from the range the layout allows 20 segments on, lo + (random AND
+\\ 3), no further than hi; its speed by its lane, slower once the criminal's sighted; its model at random
+\\ (not the fourth then).
+\\
+\\ Inputs:
+\\     RoadSeg, the window's flags, CrimSighted
+\\
+\\ Outputs:
+\\     SpawnCount, the slots
+\\     A, X, Y: corrupted
+
+.spawn
+{
+    ZA_AUTO1 lo, hi                     ; local: the lane range
+
+    JSR random:AND #15:CLC:ADC #TrafficGap
+    LDY CrimSighted:BEQ @+
+    ADC #25                             ; (C clear)
+.@
+    STA SpawnCount
+    LDY #0                              ; (traffic in the slots before)
+    LDX #1
+.slot
+    LDA ObjType,X:BEQ free
+    CMP #&80:BNE @+                     ; (traffic counted, not obstacles)
+    INY
+.@
+    INX:CPX #MaxObjects:BNE slot
+    RTS
+.free
+    CPY #3:BCC @+
+    RTS
+.@
+    LDA #&80:STA ObjType,X
+    LDA #0:STA ObjDLo,X:STA ObjVelHi,X:STA ObjHeight,X:STA ObjFlip,X
+    LDA #TrafficWidth:STA ObjWidth,X
+    LDA #SpawnRow:STA ObjDHi,X
+    LDA RoadSeg:CLC:ADC #WinFlags+20:TAY
+    LDA RoadWindow,Y
+    JSR lane_range:STA lo:STY hi
+    JSR random:AND #3:CLC:ADC lo
+    CMP hi:BCC @+
+    LDA hi
+.@
+    STA ObjLane,X:STA ObjTarget,X
+    TAY
+    LDA LaneLat-1,Y:STA ObjLat,X
+    LDA CrimSighted:BEQ @+
+    INY:INY:INY:INY                     ; (the chase's speeds)
+.@
+    LDA LaneVel-1,Y:STA ObjVel,X
+    JSR random:AND #6
+    LDY CrimSighted:BEQ @+
+    CMP #6:BNE @+
+    LDA #4
+.@
+    LSR A:ADC #1:STA ObjModel,X         ; (C clear: A was even)
+    RTS
+}
+
+\\ Keep a car to the lanes the road allows at its row (the CPC's &3124): a lane outside the range makes the
+\\ nearest end of it the car's target, and it moves 5 a loop across to it.
+\\
+\\ Inputs:
+\\     X: the slot
+\\     A: its row, 0-19; C clear
+\\
+\\ Outputs:
+\\     ObjLane, ObjTarget, ObjLat
+\\     A, Y: corrupted; X: preserved
+
+.keep_lane
+{
+    ZA_AUTO1 lo, hi                     ; local: the lane range
+
+    TAY
+    LDA ArrestState:ORA RoadHints+1:BEQ @+
+    LDA #&FF:STA ObjVel,X               ; (the arrest, or a no-traffic zone: it runs off ahead at &1FF)
+    LDA #1:STA ObjVelHi,X
+.@
+    TYA:CLC
+    ADC RoadSeg:CLC:ADC #WinFlags:TAY
+    LDA RoadWindow,Y
+    JSR lane_range:STA lo:STY hi
+    LDA ObjLane,X
+    CMP lo:BCS @+
+    LDA lo:STA ObjTarget,X
+    LDA ObjLane,X
+.@
+    CMP hi:BEQ @+:BCC @+
+    LDA hi:STA ObjTarget,X
+.@
+    LDY ObjTarget,X
+    TYA:CMP ObjLane,X:BEQ done
+    LDA ObjLat,X
+    BCC leftwards
+    ADC #4                              ; (C set: 5 across)
+    CMP LaneLat-1,Y:BCC moved
+    BCS arrived                         ; always
+.leftwards
+    SBC #4                              ; (C clear: 5 across)
+    CMP LaneLat-1,Y:BCS moved
+.arrived
+    TYA:STA ObjLane,X
+    LDA LaneLat-1,Y
+.moved
+    STA ObjLat,X
+.done
+    RTS
+}
+
+\\ Obstacles (the CPC's &3305), once a loop a segment's entered: S6 at row 20 less the segments entered. 1-3
+\\ the cones (kind 0), 4-6 the barriers (kind 1); 1 one at &32 across, 2 one at &DC; 3 two at &46 and &B4,
+\\ 6 two at &50 and &A0, and both clear S6 two and four rows on. Each in the first free slot (none: the rest
+\\ dropped), standing.
+\\
+\\ Inputs:
+\\     RoadEntered, RoadSeg, the window's S6
+\\
+\\ Outputs:
+\\     the slots; the window's S6
+\\     A, X, Y: corrupted
+
+.obstacles
+{
+    ZA_AUTO1 row                        ; local: their row
+    ZA_AUTO1 kind                       ; local: 0 cones, 1 barriers
+    ZA_AUTO1 lat, second                ; local: one's lateral; a second's
+
+    LDA RoadEntered:BEQ none
+    LDA #20:SEC:SBC RoadEntered:STA row
+    CLC:ADC RoadSeg:CLC:ADC #WinObjects+&40:TAY ; (S6 at the row)
+    LDA RoadWindow,Y:BEQ none
+    LDX #0
+    CMP #4:BCC @+
+    SBC #3                              ; (C set)
+    INX
+.@
+    STX kind
+    LDX #&32:CMP #1:BEQ last            ; (one, left)
+    LDX #&DC:CMP #2:BEQ last            ; (one, right)
+    LDA #0                              ; (two: S6 two and four rows on gone)
+    INY:INY:STA RoadWindow,Y
+    INY:INY:STA RoadWindow,Y
+    LDX #&46:LDA #&B4                   ; (the cones' places)
+    LDY kind:BEQ @+
+    LDX #&50:LDA #&A0                   ; (the barriers')
+.@
+    STA second
+    JSR place:BCC none                  ; (no slot: the second dropped)
+    LDX second
+.last
+    JMP place
+.none
+    RTS
+
+    \\ one at lateral X, in the first free slot: C clear if there was none
+
+.place
+    STX lat
+    LDX #1
+.free
+    LDA ObjType,X:BEQ found
+    INX:CPX #MaxObjects:BNE free
+    CLC
+    RTS
+.found
+    LDA #&40:STA ObjType,X
+    LDA lat:STA ObjLat,X
+    LDA row:STA ObjDHi,X
+    LDA #0
+    STA ObjDLo,X:STA ObjVel,X:STA ObjVelHi,X:STA ObjHeight,X:STA ObjFlip,X
+    LDY kind
+    LDA ObstacleWidth,Y:STA ObjWidth,X
+    TYA:CLC:ADC #5:STA ObjModel,X       ; (models 5 and 6: the cones, the barriers)
+    SEC
+    RTS
+}
+\\ An obstacle's loop within 20 rows (the CPC's &33A7): flying, its height from the flight's next, its speed
+\\ less a 32nd (the CPC's shift: the high byte's half, the low byte's 32nd and the borrow out of it), the
+\\ sprite flipped; its loops done, landed and still.
+\\
+\\ Inputs:
+\\     X: the slot
+\\
+\\ Outputs:
+\\     the slot
+\\     A, Y: corrupted; X: preserved
+
+.fly
+{
+    ZA_AUTO1 dlo, dhi                   ; local: the speed's 32nd
+
+    LDA ObjType,X:CMP #&42:BNE done
+    LDY ObjFlight,X
+    LDA ObstacleHeights,Y:STA ObjHeight,X
+    INC ObjFlight,X
+    LDA ObjVelHi,X:LSR A:STA dhi
+    LDA ObjVel,X:ROR A
+    LSR A:LSR A:LSR A:LSR A             ; (C: the bit the CPC's borrows)
+    ADC #0:STA dlo
+    LDA ObjVel,X:SEC:SBC dlo:STA ObjVel,X
+    LDA ObjVelHi,X:SBC dhi:STA ObjVelHi,X
+    LDA ObjFlip,X:EOR #1:STA ObjFlip,X
+    DEC ObjFlightLeft,X:BNE done
+    LDA #0:STA ObjVel,X:STA ObjVelHi,X  ; landed
+    LDA #1:STA ObjFlip,X
+    LDA #&41:STA ObjType,X
+.done
+    RTS
+}
+
+\\ An obstacle hit (the CPC's &33A7): it flies, at twice the car's speed (350 at most), a row further; its
+\\ flight by the speed's bucket ((speed / 128) AND 3, plus its bit 8); a knock (effect 5, priority 3).
+\\
+\\ Inputs:
+\\     X: the slot (an obstacle standing)
+\\     RoadSpeed
+\\
+\\ Outputs:
+\\     the slot
+\\     A, Y: corrupted; X: preserved
+
+.obstacle_hit
+{
+    LDA RoadSpeed:ASL A                 ; (C: bit 7)
+    LDA RoadSpeed+1:ROL A:AND #3        ; (speed / 128) AND 3
+    STA ObjFlight,X                     ; (for the moment)
+    LDA RoadSpeed+1:AND #1              ; + bit 8
+    CLC:ADC ObjFlight,X
+    ASL A:TAY
+    LDA ObstacleFlights,Y:STA ObjFlight,X
+    LDA ObstacleFlights+1,Y:STA ObjFlightLeft,X
+    LDA RoadSpeed:ASL A:STA ObjVel,X
+    LDA RoadSpeed+1:ROL A:STA ObjVelHi,X
+    CMP #2:BCC @+
+    LDA #LO(350):STA ObjVel,X
+    LDA #HI(350):STA ObjVelHi,X
+.@
+    INC ObjDHi,X
+    LDA #&42:STA ObjType,X
+    LDA #5:LDY #3:JMP sound_effect
+}
+
+.LaneLat                                ; lanes 1-4: across the road
+    EQUB &05, &50, &94, &D8
+.LaneVel                                ; and their speeds, before the sighting and after
+    EQUB 140, 220, 170, 250, 60, 140, 90, 170
+
+\\ The lanes a segment's layout allows (the CPC's &30F3): all four on the full road or the alternative ground;
+\\ three on the left (&41); else by bits 7 and 1: 2-4, 1-3, 3-4 or 1-2.
+\\
+\\ Inputs:
+\\     A: the flags
+\\
+\\ Outputs:
+\\     A: the lowest lane; Y: the highest
+\\     X: preserved
+
+.lane_range
+{
+    BEQ all
+    STA rngt                            ; (rngt: free here)
+    AND #&C1:CMP #&C1:BEQ all
+    CMP #&41:BEQ three
+    LDA rngt:AND #&82
+    CMP #&82:BEQ upper3
+    CMP #&80:BEQ three
+    CMP #&02:BEQ upper2
+    LDA #1:LDY #2:RTS
+.upper2
+    LDA #3:LDY #4:RTS
+.upper3
+    LDA #2:LDY #4:RTS
+.three
+    LDA #1:LDY #3:RTS
+.all
+    LDA #1:LDY #4:RTS
+}
+
+\\ The high byte of a * b by quarter squares (SqLo, SqHi): sq(a + b) - sq(|a - b|).
+\\
+\\ Inputs:
+\\     mul_hi.fa, mul_hi.fb: the factors
+\\
+\\ Outputs:
+\\     A: a * b DIV 256
+\\     Y: corrupted; X preserved
+
+.mul_hi
+{
+    ZA_AUTO1 fa, fb                     ; in: the factors
+    ZA_AUTO2 sq                         ; local: sq(|a - b|)
+
+    LDA fa:SEC:SBC fb:BCS @+
+    EOR #&FF:ADC #1                     ; (C clear) |a - b|
+.@
+    TAY
+    LDA SqLo,Y:STA sq
+    LDA SqHi,Y:STA sq+1
+    LDA fa:CLC:ADC fb:TAY               ; a + b (C: past 255)
+    BCS high
+    LDA SqLo,Y:CMP sq                   ; (C: no borrow)
+    LDA SqHi,Y:SBC sq+1
+    RTS
+.high
+    LDA SqLo+256,Y:CMP sq
+    LDA SqHi+256,Y:SBC sq+1
+    RTS
+}
+
+\\ Each car's place on the screen for the frame: its row (the whole segments ahead, rounded up), its line
+\\ between its row's and the next nearer's by the fraction, its column across the road at that line by its
+\\ lane, and its sprite by its size: (row - 1) / 2 for rows to 11, 5 beyond.
+\\
+\\ Inputs:
+\\     the slots, RoadY, the edge tables
+\\
+\\ Outputs:
+\\     ObjRow, ObjBottom, ObjCol, ObjSprite
+\\     A, X, Y: corrupted
+
+.traffic_project
+{
+    ZA_AUTO1 row, near, far, line       ; local: its row, the next nearer row's line and its own, its line
+    ZA_AUTO2 left, width                ; local: the road's left edge and width at the line
+    ZA_AUTO2 prod                       ; local: width * lane / 256
+    ZA_AUTO1 wide                       ; local: its top byte
+
+    LDX #MaxObjects-1
+.slot
+    LDA #0:STA ObjRow,X
+    LDA ObjType,X:BNE @+
+    JMP next
+.@
+    LDA ObjDHi,X:STA row
+    LDA ObjDLo,X:BEQ @+
+    INC row                             ; (part way: the row beyond)
+.@
+    EOR #&FF:CLC:ADC #1:STA mul_hi.fb       ; 256 - lo: back from the row (frac)
+    LDA row:BEQ skip
+    CMP #21:BCS skip                    ; (rows 1-20 drawn)
+
+    \\ the line: the row's, moved towards the nearer row's by the fraction
+
+    TAY
+    LDA RoadY,Y:CLC:ADC #32:STA far
+    LDA RoadY-1,Y:CLC:ADC #32:STA near
+    SEC:SBC far                         ; (the nearer's lower: its line greater)
+    BCC skip                            ; (a crest between: not drawn for now)
+    STA mul_hi.fa
+    JSR mul_hi                          ; (diff * frac) / 256
+    CLC:ADC far:STA line
+    CMP #128:BCS skip
+    SEC:SBC ObjHeight,X                 ; (a flying obstacle raised)
+    BCS @+
+    LDA #0
+.@
+    STA ObjBottom,X
+
+    JMP column                          ; (round the skip, which the branches either side reach)
+.skip
+    LDA #0:STA ObjRow,X
+    JMP next
+
+    \\ the column: the edges at the line (entry 127 - line), the lane's share of the width between them
+
+.column
+
+    LDA #127:SEC:SBC line:TAY
+    LDA EdgeLLo,Y:STA left
+    LDA EdgeLHi,Y:STA left+1
+    LDA EdgeRLo,Y:SEC:SBC left:STA width
+    LDA EdgeRHi,Y:SBC left+1:STA width+1
+    BMI skip
+    LDA ObjLat,X:STA mul_hi.fb
+    LDA width:STA mul_hi.fa
+    JSR mul_hi                          ; width * lane / 256: the low byte's, plus the high byte's
+    STA prod+1
+    LDA #0:STA wide
+    LDY width+1:BEQ laned
+.lat
+    LDA prod+1:CLC:ADC mul_hi.fb:STA prod+1 ; (the high byte's: the lane, as often as it is)
+    BCC @+
+    INC wide
+.@
+    DEY:BNE lat
+.laned
+    LDA prod+1:CLC:ADC left:STA prod    ; + the left edge: its X, quarter-bytes (for the collisions)
+    STA ObjXLo,X
+    LDA wide:ADC left+1:STA ObjXHi,X
+    CMP #&80:ROR A:ROR prod             ; / 4: the column
+    CMP #&80:ROR A:ROR prod
+    LDA prod:STA ObjCol,X
+
+    \\ the sprite: the size by the row
+
+    LDA row:STA ObjRow,X
+    SEC:SBC #1:LSR A
+    CMP #5:BCC @+
+    LDA #5
+.@
+    STA prod
+    LDA ObjModel,X:ASL A:ADC ObjModel,X     ; (C clear) model * 3
+    ASL A:ADC prod                      ; * 6 + size
+    STA ObjSprite,X                     ; (an index into CarSprite)
+.next
+    DEX:BMI done
+    JMP slot
+.done
+    RTS
+}
+
+\\ The criminal (docs/cpc-logic.md, The criminal), in slot 0: 868 segments ahead at the start, at 60; within
+\\ 20 rows, sighted; then at 230 (260 within 6 rows), sprinting now and then, dodging traffic and the
+\\ player's lanes, and never let past: held level with the car. Its distance has a third byte, CrimFar, for
+\\ the long approach.
+
+CrimStart = 868                                     ; segments ahead at the start (DIST 0869)
+CrimCruise = 60                                     ; its speed until sighted
+CrimChase = 230                                     ; and after
+SightRow = 20
+
+SECTION GameVars
+.CrimFar                                            ; the criminal's distance's top byte (ObjDHi,0 its middle)
+    SKIP 1
+.CrimSighted                                        ; not 0 once sighted
+    SKIP 1
+.CrimLane                                           ; the lane it's heading for, 1-4
+    SKIP 1
+.CrimMoving                                         ; not 0 while it's moving to it
+    SKIP 1
+.CrimStun                                           ; after a ram: 5, then down each loop within 20 rows
+    SKIP 1
+.CrimSprint                                         ; a sprint's loops left, plus 1 (0 none)
+    SKIP 1
+.CrimSprintCount                                    ; loops to the next sprint
+    SKIP 1
+.CrimDodgeCount                                     ; the CPC's dodge count: it only paces an RNG call
+    SKIP 1
+.CrimRams                                           ; the damage so far: 20 arrests it
+    SKIP 1
+.CrimVel                                            ; its speed (it outruns a byte when sprinting)
+    SKIP 2
+ENDSECTION
+
+\\ Start the criminal, far ahead.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     slot 0, the criminal's state
+\\     A: corrupted
+
+.crim_start
+{
+    LDA #&FF:STA ObjType
+    LDA #0:STA ObjDLo:STA CrimSighted:STA CrimStun:STA CrimSprint:STA CrimRams:STA ObjModel
+    STA CrimMoving
+    LDA #LO(CrimStart):STA ObjDHi
+    LDA #HI(CrimStart):STA CrimFar
+    LDA #CrimCruise:STA CrimVel
+    LDA #0:STA CrimVel+1
+    LDA #TrafficWidth:STA ObjWidth          ; (its width: the template's, as traffic's)
+    LDA #2:STA CrimLane
+    LDA LaneLat+1:STA ObjLat
+    LDA #20                                 ; (the CPC's counts start at 20, from the disc)
+    STA CrimSprintCount:STA CrimDodgeCount
+    RTS
+}
+
+\\ The criminal's loop (the CPC's &2E8E): on by its speed, back by the segments entered (24 bits), no nearer
+\\ than the car; within 20 rows sighted, and unless stunned: a lane step if traffic's in its lane within 2
+\\ rows, or (settled, within 6 rows) the player's in its lane; kept to the road; 10 a loop across to its
+\\ lane; its speed by its row, sprinting now and then. Its random numbers are drawn as the CPC's are.
+\\
+\\ Inputs:
+\\     slot 0, the slots, RoadEntered, RoadFrac, RoadSeg, RoadX, the window's flags
+\\
+\\ Outputs:
+\\     slot 0, the criminal's state
+\\     A, X, Y: corrupted
+
+.crim_update
+{
+    ZA_AUTO1 depth                          ; local: its row
+    ZA_AUTO1 lo, hi                         ; local: a lane range
+    ZA_AUTO1 xhi                            ; local: RoadX less the thresholds, high byte
+
+    LDA ObjType:BNE @+
+    RTS
+.@
+    LDA ObjDLo:CLC:ADC CrimVel:STA ObjDLo
+    LDA ObjDHi:ADC CrimVel+1:STA ObjDHi
+    BCC @+
+    INC CrimFar
+.@
+    LDA ObjDHi:SEC:SBC RoadEntered:STA ObjDHi
+    BCS @+
+    DEC CrimFar
+.@
+
+    \\ never let past: no nearer than the car, as traffic is passed (the CPC holds its fraction, counted
+    \\ back, at NOT(RoadFrac AND &E0) or less)
+
+    LDA RoadFrac:AND #&E0:TAY
+    LDA CrimFar:BMI hold                    ; (behind)
+    BNE done                                ; (far off)
+    LDA ObjDHi:BNE held
+    CPY ObjDLo:BCC held
+.hold
+    INY:STY ObjDLo
+    LDA #0:STA ObjDHi:STA CrimFar
+.held
+
+    \\ within 20 rows: sighted, and stunned for 3 loops after a ram; in the arrest, the pull-over's (no handler)
+
+    LDA ArrestState:BNE done
+    LDA ObjDLo:CMP #1:LDA ObjDHi:ADC #0     ; its row: the whole segments rounded up
+    STA depth
+    CMP #SightRow:BCS done
+    LDA #1:STA CrimSighted
+    LDA CrimStun:BEQ dodge
+    DEC CrimStun
+    CMP #3:BCC dodge
+.done
+    RTS
+
+    \\ traffic in its lane (where it's heading) within 2 rows of it: a lane step
+
+.dodge
+    LDX #MaxObjects-1
+.traffic
+    LDA ObjType,X:CMP #&80:BNE next     ; (traffic only)
+    LDA ObjDLo,X:CMP #1:LDA ObjDHi,X:ADC #0 ; its row
+    SEC:SBC depth
+    CLC:ADC #2:CMP #5:BCS next              ; (-2 to 2 rows from it)
+    LDA ObjLane,X:CMP CrimLane:BEQ step
+.next
+    DEX:BNE traffic
+
+    \\ none: settled in its lane within 6 rows, it steps from the player's lanes, by RoadX, which the CPC
+    \\ finds by subtracting with the borrow its dodge count leaves: 1, or 0 when it's reloaded
+
+    LDA CrimMoving:BNE range
+    LDA depth:CMP #7:BCS range
+    DEC CrimDodgeCount:BNE @+               ; (C clear: the borrow)
+    JSR random:AND #31:CLC:ADC #CrimDodgeGap:STA CrimDodgeCount
+    SEC                                     ; (no borrow)
+.@
+    LDY #0
+    LDA RoadX:SBC #LO(&A4):TAX
+    LDA RoadX+1:SBC #HI(&A4)
+    BCC lanes
+.threshold
+    INY:CPY #4:BEQ lanes
+    STA xhi
+    TXA:SEC:SBC #&46:TAX
+    LDA xhi:SBC #0
+    BCS threshold
+.lanes
+    LDA CrimLane
+    CMP PlayerLaneLo,Y:BEQ step
+    CMP PlayerLaneHi,Y:BNE range
+
+    \\ a step: random bit 7 clear, a lane right; set, left; from the edges, two the other way
+
+.step
+    JSR random
+    LDY CrimLane:INY
+    ASL A:BCC @+
+    DEY:DEY
+.@
+    TYA:BNE @+
+    LDY #2
+.@
+    CPY #5:BCC @+
+    LDY #3
+.@
+    STY CrimLane
+
+    \\ kept to the lanes the road allows at its row, two lanes at a time (the CPC's)
+
+.range
+    LDA RoadSeg:CLC:ADC #WinFlags:ADC depth:TAY
+    LDA RoadWindow,Y
+    JSR lane_range:STA lo:STY hi
+    LDA CrimLane
+    CMP lo:BCS @+
+    ADC #2                                  ; (C clear)
+.@
+    CMP hi:BEQ @+:BCC @+
+    SBC #2                                  ; (C set)
+.@
+    STA CrimLane
+
+    \\ 10 a loop across to its lane; CrimMoving till it's there
+
+    TAY
+    LDX #1
+    LDA ObjLat:CMP LaneLat-1,Y:BEQ arrived
+    BCC rightwards
+    SBC #10:BCC arrived
+    CMP LaneLat-1,Y:BCS moved
+    BCC arrived                             ; always
+.rightwards
+    ADC #10:BCS arrived
+    CMP LaneLat-1,Y:BCC moved
+.arrived
+    DEX
+    LDA LaneLat-1,Y
+.moved
+    STA ObjLat
+    STX CrimMoving
+
+    \\ its speed by its row: 230, 260 within 6 rows; sprinting, 30 more for each row it's nearer than 13.
+    \\ A sprint's 9 loops, starting on the loop the count runs out (4 after a ram)
+
+    LDX depth
+    LDA CrimSprint:BNE sprinting
+    DEC CrimSprintCount:BNE paced
+    JSR random:AND #15:CLC:ADC #CrimSprintGap:STA CrimSprintCount
+    LDA #10:STA CrimSprint
+.sprinting
+    DEC CrimSprint:BEQ paced
+    LDA CrimSprintLo,X:STA CrimVel
+    LDA CrimSprintHi,X:STA CrimVel+1
+    RTS
+.paced
+    LDA CrimPaceLo,X:STA CrimVel
+    LDA CrimPaceHi,X:STA CrimVel+1
+    RTS
+}
+
+.PlayerLaneLo                               ; the player's lanes by RoadX: under &A4, &EA, &130, &176, more
+    EQUB 4, 3, 2, 1, 1
+.PlayerLaneHi
+    EQUB 4, 4, 3, 2, 1
+
+FUNCTION CrimPace(d) = CrimChase + 30 * (d < 6)
+FUNCTION CrimSprintPace(d) = CrimPace(d) + 30 * (13 - d) * (d < 13)
+
+.CrimPaceLo                                 ; its speed by its row, 0-19
+    EQUB LO(CrimPace(0..19))
+.CrimPaceHi
+    EQUB HI(CrimPace(0..19))
+.CrimSprintLo                               ; and sprinting
+    EQUB LO(CrimSprintPace(0..19))
+.CrimSprintHi
+    EQUB HI(CrimSprintPace(0..19))

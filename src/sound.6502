@@ -1,0 +1,365 @@
+\\ sound.6502 - the SN76489, a frame at a time from the IRQ (frame.6502), in the border: the engine, the
+\\ turbo's whoosh and the effects (docs/cpc-logic.md, Sound and speech). In main RAM.
+\\
+\\ The CPC's engine is 47-208 Hz, below the SN76489's tones (122 Hz at the lowest), so it's periodic noise
+\\ clocked by tone 3 (silent itself): 1/15 of tone 3's rate. The CPC's effects are 1-bit samples played with
+\\ the game stopped; here they're envelopes, a frame of noise and tone 1 at a time, the game running on.
+\\
+\\ Channels: tone 1 the effects; tone 2 the turbo's whistle; tone 3 the noise's clock; the noise the engine,
+\\ the turbo's whoosh, or an effect's.
+
+ZA_AUTO2 sndengine                      ; in: the engine's tone 3 period (sound_update)
+ZA_AUTO1 sndturbo                       ; in: the turbo's noise period, the CPC's, 59 down (0: none)
+ZA_AUTO1 fxreq                          ; in: an effect asked for (0 none): the IRQ takes it
+ZA_AUTO1 fxreqprio                      ; in: its priority, lower winning
+ZA_AUTO2 fxptr                          ; the effect playing: its next frame (high byte 0: none)
+ZA_AUTO1 fxprio                         ; and its priority
+
+EngineAtt = 3                           ; the engine's attenuation (the CPC's volume 13)
+TurboAtt = 6                            ; the whoosh's (its 11)
+NoiseTone3 = 3                          ; noise control: periodic, clocked by tone 3
+WhiteTone3 = 7                          ; white, clocked by tone 3
+FxEngine = &80                          ; an effect's frame leaving the noise to the engine
+FxEnd = &FF
+
+\\ Ask for an effect: refused if one's waiting with a lower priority number.
+\\
+\\ Inputs:
+\\     A: the effect, 1-9 (the CPC's numbers)
+\\     Y: its priority, lower winning
+\\
+\\ Outputs:
+\\     fxreq, fxreqprio
+\\     A: corrupted; X, Y: preserved
+
+.sound_effect
+{
+    ZA_AUTO1 fx                         ; local: the effect
+
+    STA fx
+    LDA fxreq:BEQ @+
+    CPY fxreqprio:BEQ @+:BCS done
+.@
+    STY fxreqprio                       ; (the IRQ reads fxreq first: an old request might take
+    LDA fx:STA fxreq                    ; this priority, harmlessly)
+.done
+    RTS
+}
+
+\\ The sound's frame: a request taken (unless a higher priority's playing); the noise and tone 3 for the
+\\ turbo or the engine; the effect's frame over them; then whatever's changed written to the chip.
+\\
+\\ Inputs:
+\\     sndengine, sndturbo, fxreq, fxreqprio; the effect playing
+\\
+\\ Outputs:
+\\     the chip; fxreq 0, the effect playing
+\\     A, X, Y: corrupted
+
+.sound_frame
+{
+    ZA_AUTO1 noisectl, noiseatt         ; local: what's wanted: the noise
+    ZA_AUTO2 tone1, tone2, tone3        ; local: the tones' periods
+    ZA_AUTO1 tone1att, tone2att         ; local: and attenuations
+
+    \\ a request: taken unless an effect of a lower number's playing
+
+    LDX fxreq:BEQ frame
+    LDA fxreqprio
+    LDY fxptr+1:BEQ start
+    CMP fxprio:BEQ start:BCS taken
+.start
+    STA fxprio
+    LDA FxLo-1,X:STA fxptr
+    LDA FxHi-1,X:STA fxptr+1
+.taken
+    LDA #0:STA fxreq
+
+    \\ the turbo's whoosh: white noise clocked by tone 3 at twice the CPC's noise period (rising as it
+    \\ falls), a whistle on tone 2 at twice the period plus 10; else the engine
+
+.frame
+    LDA sndturbo:BEQ engine
+    ASL A:STA tone3
+    LDA #0:ROL A:STA tone3+1
+    LDA sndturbo:CLC:ADC #10
+    ASL A:STA tone2
+    LDA #0:ROL A:STA tone2+1
+    LDA #WhiteTone3:STA noisectl
+    LDA #TurboAtt:STA noiseatt:STA tone2att
+    BNE effect                          ; always
+.engine
+    LDA sndengine:STA tone3
+    LDA sndengine+1:STA tone3+1
+    LDA #NoiseTone3:STA noisectl
+    LDA #EngineAtt:STA noiseatt
+    LDA #15:STA tone2att
+    LDA #&FF:STA tone2:STA tone2+1      ; (silent: whatever was written stays)
+
+    \\ the effect's frame: its noise (unless it leaves it to the engine) and tone 1 (its period / 4,
+    \\ 0 silent)
+
+.effect
+    LDA #15:STA tone1att
+    LDA #&FF:STA tone1:STA tone1+1
+    LDA fxptr+1:BEQ write
+    LDY #0
+    LDA (fxptr),Y:CMP #FxEnd:BNE noise
+    STY fxptr+1                         ; (its end)
+    BEQ write                           ; always
+.noise
+    BMI tone                            ; (FxEngine: the engine's noise)
+    STA noisectl
+    INY:LDA (fxptr),Y:STA noiseatt
+.tone
+    LDY #2
+    LDA (fxptr),Y:BEQ next
+    ASL A:STA tone1                     ; (* 4)
+    LDA #0:ROL A:ASL tone1:ROL A:STA tone1+1
+    INY:LDA (fxptr),Y:STA tone1att
+.next
+    LDA fxptr:CLC:ADC #4:STA fxptr
+    BCC write
+    INC fxptr+1
+
+    \\ the chip: what's changed, through port A as output (the keyboard has it as input otherwise), with the
+    \\ keyboard's auto-scan on meanwhile: off, its multiplexer drives PA7 (bit 7 of every latch byte)
+
+.write
+    LDA #&0B:STA &FE40                  ; addressable latch: bit 3 high, the keyboard's auto-scan on
+    LDA #&FF:STA &FE43                  ; system VIA: DDRA, all out
+    LDX #0
+    LDA tone1:LDY tone1+1:JSR set_tone
+    LDA tone1att:JSR set_att
+    INX
+    LDA tone2:LDY tone2+1:JSR set_tone
+    LDA tone2att:JSR set_att
+    INX
+    LDA tone3:LDY tone3+1:JSR set_tone
+    LDA #15:JSR set_att                 ; (tone 3 only clocks the noise)
+    INX
+    LDA noisectl:LDY #0:JSR set_tone
+    LDA noiseatt:JSR set_att
+    LDA #&7F:STA &FE43                  ; system VIA: DDRA, PA7 in again
+    LDA #&03:STA &FE40                  ; addressable latch: bit 3 low, the auto-scan off again
+    RTS
+}
+
+\\ Write channel X's attenuation, if it's changed.
+\\
+\\ Inputs:
+\\     A: the attenuation, 0-15
+\\     X: the channel, 0-3 (3 the noise)
+\\
+\\ Outputs:
+\\     SndAtt
+\\     A: corrupted; X, Y: preserved
+
+.set_att
+{
+    CMP SndAtt,X:BEQ same
+    STA SndAtt,X
+    ORA AttLatch,X
+    JMP sn_write
+.same
+    RTS
+}
+
+\\ Write tone X's period, or the noise's control, if it's changed (a tone's high byte &FF: leave it).
+\\
+\\ Inputs:
+\\     A: the period's low byte, or the noise's control (X = 3)
+\\     Y: the period's high byte, 0-3 (&FF: unchanged); 0 for the noise
+\\     X: the channel, 0-3
+\\
+\\ Outputs:
+\\     SndLo, SndHi
+\\     A: corrupted; X, Y: preserved
+
+.set_tone
+{
+    ZA_AUTO1 lo, hi                     ; local: the period, for its second byte
+
+    CPY #&FF:BEQ same
+    STA lo
+    CMP SndLo,X:BNE changed
+    TYA:CMP SndHi,X:BEQ same
+.changed
+    LDA lo:STA SndLo,X
+    TYA:STA SndHi,X
+    LDA lo:AND #15:ORA ToneLatch,X      ; the latch byte: the low 4 bits
+    JSR sn_write
+    CPX #3:BEQ same                     ; (the noise's control: that's all)
+    TYA:ASL A:ASL A:ASL A:ASL A:STA hi  ; the data byte: the top 6, (high << 4) OR (low >> 4)
+    LDA lo:LSR A:LSR A:LSR A:LSR A
+    ORA hi
+    JMP sn_write
+.same
+    RTS
+}
+
+\\ A byte to the SN76489: onto port A, then its write enable (the addressable latch's bit 0) low for 8 us.
+\\
+\\ Inputs:
+\\     A: the byte
+\\     DDRA: all out
+\\
+\\ Outputs:
+\\     A: corrupted; X, Y: preserved
+
+.sn_write
+{
+    STA &FE4F                           ; system VIA: ORA without handshake
+    LDA #&00:STA &FE40                  ; addressable latch: bit 0 low, the sound chip's write enable
+    NOP:NOP:NOP:NOP:NOP:NOP:NOP:NOP     ; (8 us: 32 of the chip's 4 MHz clocks)
+    LDA #&08:STA &FE40                  ; and high again
+    RTS
+}
+
+.AttLatch                               ; the latch bytes: attenuation and tone/control, by channel
+    EQUB &90, &B0, &D0, &F0
+.ToneLatch
+    EQUB &80, &A0, &C0, &E0
+
+.SndAtt                                 ; the chip's attenuations as written (&FF: all written first)
+    EQUB &FF, &FF, &FF, &FF
+.SndLo                                  ; its periods (and the noise's control) as written
+    EQUB &FF, &FF, &FF, &FF
+.SndHi
+    EQUB &FF, &FF, &FF, &FF
+
+\\ The effects, a frame of 4 bytes each: the noise's control (FxEngine: the engine's noise; FxEnd: the
+\\ end), its attenuation, tone 1's period / 4 (0: silent), its attenuation. Noise controls: 4 white at
+\\ N/512, 5 at N/1024, 6 at N/2048.
+
+FUNCTION Fade(f, step, from) = MIN({15, from + f * step})
+
+.Fx1                                    ; a skid or a screech: a squeal over a hiss
+    FOR f = 0..4
+        EQUB 4, Fade(f, 1, 8), 14 + (f AND 1), Fade(f, 1, 3)
+    NEXT
+    EQUB FxEnd
+.Fx2                                    ; a jump's landing: a deep thud
+    FOR f = 0..15
+        EQUB 6, Fade(f, 1, 0), 255, Fade(f, 2, 0)
+    NEXT
+    EQUB FxEnd
+.Fx3                                    ; a car hit, or a ram: a crunch, a thump under it
+    FOR f = 0..14
+        EQUB 4, Fade(f, 1, 0), 250, Fade(f, 2, 0)
+    NEXT
+    EQUB FxEnd
+.Fx4                                    ; a roadside object, or the divider: a slower thump
+    FOR f = 0..15
+        EQUB 5, Fade(f, 1, 0), 220, Fade(f, 2, 2)
+    NEXT
+    EQUB FxEnd
+.Fx5                                    ; an obstacle: a higher knock
+    FOR f = 0..9
+        EQUB 4, Fade(f, 2, 2), 100, Fade(f, 3, 2)
+    NEXT
+    EQUB FxEnd
+.Fx6                                    ; a wall's scrape: clicks
+    FOR f = 0..5
+        EQUB 4, 2 + 10 * (f AND 1), 0, 15
+    NEXT
+    EQUB FxEnd
+.Fx7                                    ; passing roadside objects: a brief rush
+    FOR f = 0..3
+        EQUB 5, 6 + 3 * f, 0, 15
+    NEXT
+    EQUB FxEnd
+.Fx8                                    ; the continue's countdown: 1.5 kHz
+    EQUB FxEngine, 0, 21, 0
+    EQUB FxEngine, 0, 21, 0
+    EQUB FxEnd
+.Fx9                                    ; and 1 kHz
+    EQUB FxEngine, 0, 31, 0
+    EQUB FxEngine, 0, 31, 0
+    EQUB FxEnd
+
+FxList = {Fx1, Fx2, Fx3, Fx4, Fx5, Fx6, Fx7, Fx8, Fx9}
+.FxLo
+    EQUB LO(FxList)
+.FxHi
+    EQUB HI(FxList)
+
+\\ Speak a phrase (the CPC's &0B75), the game stopped meanwhile as the CPC's is, the display running on: from
+\\ the speech's bank, a sample each 207 cycles (the CPC's 414 T at 4 MHz), high nibble first, each an
+\\ attenuation for tones 1 and 2 at period 1, a steady level for it to shape (the CPC writes AY volumes 8
+\\ and 9: tools/genspeech.py maps them). The IRQ's frame keeps off port A meanwhile (speaking); the chip's
+\\ shadows are forgotten after, so the sound's next frame writes everything. Nothing with no speech bank.
+\\
+\\ Inputs:
+\\     A: the phrase, 1-5
+\\     bankspeech
+\\
+\\ Outputs:
+\\     the chip; SndAtt, SndLo, SndHi
+\\     A, X, Y: corrupted
+
+SampleDelay = 12                        ; the delay loop's count: tuned in jsbeeb to 207 cycles a sample
+
+.speak
+{
+    ZA_AUTO2 ptr, left                  ; local: the phrase's next byte; bytes left
+    ZA_AUTO1 pair                       ; local: the byte's two samples
+
+    LDY bankspeech:BPL @+
+    RTS                                 ; (no speech bank)
+.@
+    TAX
+    LDA SpeechAddrLo-1,X:STA ptr
+    LDA SpeechAddrHi-1,X:STA ptr+1
+    LDA SpeechLenLo-1,X:STA left
+    LDA SpeechLenHi-1,X:STA left+1
+    LDA #&80:STA speaking
+    LDA #&0B:STA &FE40                  ; addressable latch: the keyboard's auto-scan on (PA7 free)
+    LDA #&FF:STA &FE43                  ; system VIA: DDRA, all out
+    LDX #0
+.setup
+    LDA SpeakSetup,X:JSR sn_write
+    INX:CPX #SpeakSetupEnd-SpeakSetup:BNE setup
+    STY &FE30                           ; ROMSEL: the speech's bank
+.byte
+    LDY #0:LDA (ptr),Y:STA pair
+    LSR A:LSR A:LSR A:LSR A
+    JSR sample
+    LDA pair:AND #15
+    JSR sample
+    INC ptr:BNE @+
+    INC ptr+1
+.@
+    LDA left:BNE @+
+    DEC left+1
+.@
+    DEC left
+    LDA left:ORA left+1:BNE byte
+
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    LDA #&9F:JSR sn_write               ; (tones 1 and 2 off)
+    LDA #&BF:JSR sn_write
+    LDA #&7F:STA &FE43                  ; system VIA: DDRA, PA7 in again
+    LDA #&03:STA &FE40                  ; addressable latch: the auto-scan off again
+    LDA #&FF:LDX #3
+.forget
+    STA SndAtt,X:STA SndLo,X:STA SndHi,X
+    DEX:BPL forget
+    LDA #0:STA speaking
+    RTS
+
+    \\ a sample (A: its attenuation) to tones 1 and 2, then the wait
+
+.sample
+    TAY
+    ORA #&90:JSR sn_write               ; tone 1's attenuation
+    TYA:ORA #&B0:JSR sn_write           ; tone 2's
+    LDX #SampleDelay
+.wait
+    DEX:BNE wait
+    RTS
+}
+
+.SpeakSetup                             ; tones 1 and 2 at period 1, tone 3 and the noise off
+    EQUB &81, &00, &A1, &00, &DF, &FF
+.SpeakSetupEnd

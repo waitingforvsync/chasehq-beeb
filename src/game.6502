@@ -1,0 +1,157 @@
+\\ game.6502 - the main loop. For now stage 1, again and again: the road, the traffic, the criminal, the
+\\ clock and the score.
+
+ZA_AUTO1 back                           ; local to the loop: the back playfield's high byte, &40 or &60
+
+\\ The game: stage 1, for good; after a game over with the score cleared, after an arrest with it kept.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     none: it never returns
+
+TopSpeed = 360                          ; the CPC's in high gear (docs/cpc-logic.md)
+
+SECTION GameVars
+.StageLoops                             ; the stage's loops, to 255: its phrase on the second
+    SKIP 1
+.StagePhrase                            ; the stage's next phrase: 3 first, then 1, 2, 3 ... (the CPC's)
+    SKIP 1
+ENDSECTION
+
+.game
+{
+    LDA #3:STA StagePhrase
+    JSR flow_new_game
+    JSR text_new_game
+    JSR stage_start
+    LDA #HI(PlayAddrB):STA back         ; (A shown first)
+    JSR road_frame
+    JSR road_draw
+    JSR show
+
+    \\ the display on, once the first playfield's shown: &FE00 put back on the register the next handler
+    \\ writes first (12 if it's irqplay, else 4)
+
+    SEI
+    LDA #8:STA &FE00                    ; CRTC: R8
+    LDA #R8On:STA &FE01
+    LDA irq.irqbranch-1:CMP #(irq.irqplay-irq.irqbranch)
+    LDA #12:BEQ @+                      ; irqplay's next
+    LDA #4
+.@
+    STA &FE00                           ; CRTC: the next handler's register
+    CLI
+    LDA #5:JSR speak                    ; (the game's start: the CPC's phrase 5)
+.loop
+    JSR flow_update                     ; (last loop's speed, rams and overtakes)
+    BCC run
+    LDA FlowState:CMP #FlowOver:BNE @+
+    JSR flow_new_game
+    JSR text_new_game
+.@
+    JSR stage_start
+.run
+    JSR road_advance
+    JSR traffic_update
+    JSR crim_update
+    JSR read_keys
+    LDX FlowState:BEQ keyed
+    CPX #FlowArrested:BEQ arrest
+    CPX #FlowContinue:BEQ offer
+    CPX #FlowOver:BEQ none
+    AND #KeyGear OR KeyLeft OR KeyRight ; (the time up: no pedals)
+    JMP keyed
+.offer
+    AND #KeyGear:BEQ keyed              ; (a continue offered: only the gear, which takes it)
+    JSR flow_continue
+.none
+    LDA #0
+    BEQ keyed                           ; always
+.arrest
+    JSR arrest_keys                     ; (the arrest: the autopilot's)
+.keyed
+    JSR car_update
+    JSR sound_update
+    JSR road_frame
+    JSR traffic_project
+    JSR car_collide
+    JSR road_draw
+    JSR car_offroad                     ; (after the road: its tapers in the tables, as the CPC's)
+    JSR car_spark
+    JSR plot_objects
+    JSR draw_meter
+    JSR draw_turbos
+    JSR draw_car
+    JSR page_draw                       ; (over everything)
+    JSR msg_update                      ; (after the loop's requests)
+    JSR panel_update
+    JSR popup_update
+    JSR show
+    JSR road_commit                     ; (a fork passed: the streams to its branch, as the CPC's after its flip)
+
+    \\ the stage's phrase on its second loop (the CPC's &179F)
+
+    LDA StageLoops:CMP #255:BEQ @+
+    INC StageLoops
+    CMP #1:BNE @+
+    LDX StagePhrase
+    TXA:JSR speak
+    LDX StagePhrase:INX
+    CPX #4:BCC rotated
+    LDX #1
+.rotated
+    STX StagePhrase
+.@
+    JMP loop
+}
+
+\\ Start the stage: the road, the car, the traffic, the criminal, the clock and the panel's figures.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     their states
+\\     A, X, Y: corrupted
+
+.stage_start
+{
+    LDA #0:STA StageLoops
+    JSR road_start
+    JSR car_start
+    JSR traffic_start
+    JSR crim_start
+    JSR flow_start
+    JSR text_stage
+    LDA bankspeech:BPL @+
+    MESSAGE MsgStart, MsgStartPrio      ; (no speech: the 64K CPC's words in its place)
+.@
+    JMP panel_start
+}
+
+\\ Show the back playfield from the next panel on, and make the other the back once it's free: once its last
+\\ line has gone this frame (irqphase), or the panel's top has taken the new one.
+\\
+\\ Inputs:
+\\     back: the playfield drawn
+\\
+\\ Outputs:
+\\     back: the other
+\\     A: corrupted
+
+.show
+{
+.taken
+    LDA reqshow:BNE taken               ; the last request taken
+    LDA back:LSR A:LSR A:LSR A          ; its CRTC address's high byte
+    STA reqshow
+.wait
+    LDA reqshow:BEQ free                ; the panel's top has taken it
+    BIT irqphase:BPL wait               ; or the old one's last line has gone
+.free
+    LDA back:EOR #&20:STA back
+    RTS
+}
+

@@ -1,0 +1,604 @@
+\\ flow.6502 - the clock, the score and the stage's course (docs/cpc-logic.md, Time, score and flow), so far:
+\\ driving, the time running out, the game over, the arrest. In the code's bank.
+
+FlowDriving = 0
+FlowTimeUp = 1                                      ; the car coasts to a stop
+FlowStopped = 2                                     ; stopped: TIME UP's page runs out
+FlowArrested = 3                                    ; 20 rams: the arrest (ArrestState), then the stage again
+FlowContinue = 4                                    ; a continue offered, counting down
+FlowOver = 5                                        ; the game's over: Nancy's verdict, then a new game
+LoopsASecond = 15                                   ; the CPC's
+ArrestRams = 20
+ContinueCount = 21                                  ; the offer's count, 4 loops each (the CPC's L)
+Continues = 2                                       ; a game's
+
+SECTION GameVars
+.Score                                              ; BCD, 8 digits, units and tens first
+    SKIP 4
+.Seconds                                            ; BCD, 60 down
+    SKIP 1
+.Tick                                               ; loops to the next second
+    SKIP 1
+.FlowState
+    SKIP 1
+.FlowSighted                                        ; the sighting dealt with
+    SKIP 1
+.FlowPassed                                         ; overtakes scored
+    SKIP 1
+.Chain                                              ; the overtakes' chain, BCD hundreds: 2 more a car, to 80
+    SKIP 1
+.FlowWait                                           ; the continue's count
+    SKIP 1
+.ContinuesLeft                                      ; (the CPC's &1651)
+    SKIP 1
+.ContinuesUsed                                      ; this game's: not 0, the ram and clear bonuses a tenth
+    SKIP 1                                          ; (&164C)
+.Siren                                              ; the sirens: 0 normal, 8 swapped
+    SKIP 1
+.ArrestState                                        ; the arrest (the CPC's &1765): 0 none, 1 the pull-over,
+    SKIP 1                                          ; 2 pulling in behind, 3 a wait, 4 the bonus and a pause
+.ArrestCount                                        ; the pull-over's loops to the stop (&1695)
+    SKIP 1
+.Dist                                               ; the distance to the criminal, BCD: tens and units, then
+    SKIP 2                                          ; thousands and hundreds
+ENDSECTION
+
+\\ Start a game: the score 0, stage 1, two continues.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     Score, Stage, ContinuesLeft, ContinuesUsed
+\\     A: corrupted
+
+.flow_new_game
+{
+    LDA #0
+    STA Score:STA Score+1:STA Score+2:STA Score+3
+    STA ContinuesUsed
+    LDA #1:STA Stage
+    LDA #Continues:STA ContinuesLeft
+    RTS
+}
+
+\\ Start a stage's course: 60 seconds, driving, the sirens still.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     the flow's state, sirenpal
+\\     A: corrupted
+
+.flow_start
+{
+    LDA #&60:STA Seconds
+    LDA #LoopsASecond:STA Tick
+    LDA #0
+    STA FlowState:STA FlowSighted:STA FlowPassed:STA Chain:STA Siren:STA ArrestState
+    LDA #8:STA sirenpal                     ; (the IRQ's: the sirens' normal palette)
+    RTS
+}
+
+\\ The flow's loop: the sighting (the clock back to 60, the sirens flashing from then on), the clock, the loop's score and the overtakes; the
+\\ time running out; the arrest (the rams are scored as they happen, by car_collide); the end of the game or
+\\ the stage.
+\\
+\\ Inputs:
+\\     RoadSpeed, CrimSighted, CrimRams, Overtakes, the criminal's distance
+\\
+\\ Outputs:
+\\     the flow's state, the score, Dist
+\\     C: set when the stage should start again
+\\     A, X, Y: corrupted
+
+.flow_update
+{
+    LDA ObjDHi:LDX CrimFar              ; DIST, the criminal's distance in segments, whatever the state (the
+    JSR to_bcd                          ; CPC's panel does it each loop)
+    LDA FlowState:CMP #FlowStopped:BCC live
+    BNE @+
+    JMP flow_stopped
+.@
+    CMP #FlowArrested:BNE @+
+    JMP arrest_update
+.@
+    CMP #FlowContinue:BNE @+
+    JMP flow_offer
+.@
+    JMP flow_over
+.live
+
+    \\ the sighting: the clock back to 60, once
+
+    LDA CrimSighted:BEQ clock
+    LDA FlowSighted:BNE siren
+    LDA #1:STA FlowSighted
+    PAGE PageSighting
+    LDA #&60:STA Seconds
+    LDA #LoopsASecond:STA Tick
+    LDA #FlowDriving:STA FlowState
+.siren
+    LDA Siren:EOR #8:STA Siren              ; swapped each loop, as the CPC's two buffers have them
+    CLC:ADC #8:STA sirenpal                 ; (the IRQ writes it)
+
+    \\ the clock: a second every 15 loops; at 0 the time's up, and stopped with none left the game's over
+
+.clock
+    LDA FlowState:BNE timeup
+    DEC Tick:BNE scoring
+    LDA #LoopsASecond:STA Tick
+    SED
+    LDA Seconds:SEC:SBC #1:STA Seconds
+    CLD
+    BEQ out
+    CMP #&15:BNE scoring
+    MESSAGE MsgTime15, MsgTime15Prio        ; (Nancy's warning)
+    JMP scoring
+.out
+    LDA #FlowTimeUp:STA FlowState
+.timeup
+    PAGE PageTimeUp                         ; (every loop while the car coasts)
+    LDA RoadSpeed:ORA RoadSpeed+1:BNE scoring
+    LDA #FlowStopped:STA FlowState
+    LDA #4:JSR speak                    ; (stopped, the time up: the CPC's phrase 4)
+    CLC
+    RTS
+
+    \\ a fork's branch chosen (the CPC's &4064): the criminal's, the partner's cheer; the other, the criminal
+    \\ slowed (its speed's low byte &5F, till its handler sets it again), (stage + 4) x 10,000 (the CPC's,
+    \\ though it looks the wrong way round) and the partner's dismay
+
+.scoring
+    LDA ForkEvent:BEQ loopscore
+    CMP RoadHints+2:BNE wrong           ; (the criminal's branch, 1 left, 2 right)
+    MESSAGE MsgForkRight, MsgForkRightPrio
+    JMP loopscore
+.wrong
+    LDA #&5F:STA CrimVel
+    LDA Stage:CLC:ADC #4                ; (under 10: BCD as it is)
+    LDX #2:JSR popup_score
+    SED
+    CLC:JSR add_score2
+    CLD
+    MESSAGE MsgForkWrong, MsgForkWrongPrio
+
+    \\ the loop's score: the CPC's sawtooth in the speed (LoopScore); the overtakes, each putting the chain
+    \\ 2 up (to 80) and adding it in hundreds
+
+.loopscore
+    LDA RoadSpeed:AND #&7F:LSR A:TAX
+    SED
+    LDA LoopScore,X:JSR add_score0
+.overtakes
+    LDA Overtakes:CMP FlowPassed:BEQ overtaken
+    INC FlowPassed
+    LDA Chain:CLC:ADC #2
+    CMP #&81:BCC @+
+    LDA #&80
+.@
+    STA Chain
+    LDX #1:JSR popup_score
+    CLC:JSR add_score1                      ; (the chain's in hundreds)
+    JMP overtakes
+.overtaken
+    CLD
+
+    \\ 20 rams: the arrest (the CPC's &1166): the pull-over, the criminal at 400, its damage 20
+
+    LDA CrimRams:CMP #ArrestRams:BCC dist
+    LDA #FlowArrested:STA FlowState
+    LDA #1:STA ArrestState
+    PAGE PagePullOver
+    LDA #20:STA ArrestCount:STA CrimRams
+    LDA #LO(400):STA CrimVel
+    LDA #HI(400):STA CrimVel+1
+
+.dist
+    CLC
+    RTS
+}
+
+\\ Stopped with the time up (the CPC's clock state 2): once TIME UP's page has run out, a continue offered if
+\\ one's left, else the game's over.
+\\
+\\ Inputs:
+\\     PageOn, ContinuesLeft
+\\
+\\ Outputs:
+\\     C: clear
+\\     the flow's state
+\\     A, X, Y: corrupted
+
+.flow_stopped
+{
+    LDA PageOn:BNE wait
+    LDA ContinuesLeft:BEQ game_over
+    DEC ContinuesLeft
+    LDA #FlowContinue:STA FlowState
+    LDA #ContinueCount:STA FlowWait
+    LDA #4:STA Tick
+.wait
+    CLC
+    RTS
+}
+
+\\ The continue's offer (the CPC's clock state 3): its page every loop, its TIME the count halved ("10", or a
+\\ space and a digit); every 4 loops the count down with a beep (effect 8 on an even count, 9 on an odd one,
+\\ priority 1); at 0, the game's over. The gear takes it (game.6502, flow_continue).
+\\
+\\ Inputs:
+\\     FlowWait, Tick
+\\
+\\ Outputs:
+\\     C: clear
+\\     the page; the flow's state
+\\     A, X, Y: corrupted
+
+.flow_offer
+{
+    DEC Tick:BNE shown
+    LDA #4:STA Tick
+    DEC FlowWait:BEQ game_over
+    LDA FlowWait:AND #1:ORA #8
+    LDY #1:JSR sound_effect
+.shown
+    LDA FlowWait:LSR A
+    LDX #1:LDY #0                       ; ("10")
+    CMP #10:BEQ @+
+    LDX #GlyphSpace:TAY
+.@
+    STX PageContinueTime:STY PageContinueTime+1
+    PAGE PageContinue
+    CLC
+    RTS
+}
+
+\\ The continue taken (the CPC's gear in clock state 3): driving again with 60 seconds, the damage gone (the
+\\ sighting and the criminal's place kept), 3 turbos, the gear left a while, the page gone and phrase 5;
+\\ the bonuses a tenth from now on.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     the flow's state, CrimRams, CarTurbos, CarGearWait, PageOn, ContinuesUsed
+\\     A, X, Y: corrupted
+
+.flow_continue
+{
+    LDA #FlowDriving:STA FlowState
+    STA CrimRams:STA PageOn
+    INC ContinuesUsed
+    LDA #3:STA CarTurbos:STA CarGearWait
+    LDA #&60:STA Seconds
+    LDA #LoopsASecond:STA Tick
+    LDA #5:JMP speak
+}
+
+\\ The game's over (the CPC's &179E, &0445): Nancy's verdict, and the GAME OVER page every loop till it's
+\\ closed; then a new game. (The CPC's own ending, a dissolve and the car following the criminal along a set
+\\ road, comes with the title.)
+\\
+\\ Outputs:
+\\     C: set when the game's to start again
+\\     the flow's state, the page, the message
+\\     A, X, Y: corrupted
+
+.game_over
+{
+    LDA #FlowOver:STA FlowState
+    MESSAGE MsgGameOver, MsgGameOverPrio
+    CLC
+    RTS
+}
+
+.flow_over
+{
+    PAGE PageGameOver
+    LDA #MsgIdle:CMP MsgState           ; (C set: closed)
+    RTS
+}
+
+\\ The arrest after the pull-over (the CPC's &0F8E): 2, the car pulls in behind (4 lines higher a loop to 16, 12
+\\ across to &126, a 32nd of a segment on unless that carries); 3, 4 loops' wait, then the arrest's page; 4,
+\\ when it's gone, the bonuses (the stage x 100,000, and 5,000 a second left) and their page; 5, when that's
+\\ gone, the stage again.
+\\
+\\ Inputs:
+\\     ArrestState
+\\
+\\ Outputs:
+\\     C: set when the stage should start again
+\\     the arrest's state, the car, Score
+\\     A, X, Y: corrupted
+
+.arrest_update
+{
+    LDA ArrestState
+    CMP #2:BEQ pullin
+    CMP #3:BEQ wait
+    CMP #4:BEQ arrested
+    CMP #5:BEQ bonused
+    CLC                                 ; (the pull-over: arrest_keys)
+    RTS
+.pullin
+    LDA CarLift:CMP #16:BCS pulled
+    ADC #4:STA CarLift                  ; (C clear)
+    LDA RoadX:CLC:ADC #12:STA RoadX
+    BCC @+
+    INC RoadX+1
+.@
+    CMP #LO(&126):LDA RoadX+1:SBC #HI(&126)
+    BCC @+
+    LDA #LO(&126):STA RoadX
+    LDA #HI(&126):STA RoadX+1
+.@
+    LDA RoadFrac:CLC:ADC #&20
+    BCS @+                              ; (the CPC's: not if it carries)
+    STA RoadFrac
+.@
+    CLC
+    RTS
+.pulled
+    LDA #3:STA ArrestState
+    LDA #4:STA ArrestCount
+    CLC
+    RTS
+.wait
+    DEC ArrestCount:BNE still
+    LDA #4:STA ArrestState
+    PAGE PageArrest
+.still
+    CLC
+    RTS
+.arrested
+    LDA PageOn:BNE still
+    JSR arrest_bonus
+    LDA #5:STA ArrestState
+    PAGE PageBonus
+    CLC
+    RTS
+.bonused
+    LDA PageOn:BNE still
+    SEC
+    RTS
+}
+
+\\ The bonuses, and the bonus page's figures (the CPC's &100C): the clear bonus's two leading figures (the
+\\ stage and 0: the stage x 100,000), the seconds left (no tens a space) at 5,000 each, and the score with
+\\ them added (leading zeros spaces).
+\\
+\\ Inputs:
+\\     Stage, Seconds, Score
+\\
+\\ Outputs:
+\\     Score, Seconds (0), the page's figures
+\\     A, X, Y: corrupted
+
+.arrest_bonus
+{
+    LDA Seconds:LSR A:LSR A:LSR A:LSR A
+    BNE @+
+    LDA #GlyphSpace
+.@
+    STA PageBonusTime
+    LDA Seconds:AND #15:STA PageBonusTime+1
+    LDA Stage:LDX ContinuesUsed:BEQ full
+    STA PageBonusClear+1                ; (after a continue the stage x 10,000)
+    LDX #GlyphSpace:STX PageBonusClear
+    BNE add                             ; always
+.full
+    STA PageBonusClear
+    LDX #0:STX PageBonusClear+1
+    ASL A:ASL A:ASL A:ASL A             ; (BCD: the stage's under 10)
+.add
+    SED
+    CLC:JSR add_score2
+.second
+    LDA Seconds:BEQ seconds
+    SEC:SBC #1:STA Seconds
+    LDA #&50:CLC:JSR add_score1         ; 5,000 a second
+    JMP second
+.seconds
+    CLD
+    LDX #3:LDY #0
+.digits
+    LDA Score,X:LSR A:LSR A:LSR A:LSR A:STA PageBonusScore,Y
+    LDA Score,X:AND #15:STA PageBonusScore+1,Y
+    INY:INY
+    DEX:BPL digits
+    LDY #0
+.lead
+    LDA PageBonusScore,Y:BNE done
+    LDA #GlyphSpace:STA PageBonusScore,Y
+    INY:CPY #7:BNE lead
+.done
+    RTS
+}
+
+\\ The pull-over's loop (the CPC's &10B9): the criminal 5 a loop across towards &23 and 5 slower a loop to 70;
+\\ the car on autopilot: steered right at X &110 or more, left under &101, accelerating up to its target (350;
+\\ 69 + 20 a row within 14 rows; none at 14, the CPC's DJNZ from 0), braking 50 above it, the gear as the
+\\ demo's. Not steering, within 3 rows, 20 loops on: both stopped, the criminal a row ahead, a screech, state 2.
+\\
+\\ Inputs:
+\\     ArrestState, ArrestCount, the criminal, RoadX, RoadSpeed, CarGear
+\\
+\\ Outputs:
+\\     A: the keys (none after the pull-over)
+\\     the criminal, the arrest's state
+\\     X, Y: corrupted
+
+.arrest_keys
+{
+    ZA_AUTO1 keys, row                  ; local: the keys; the criminal's row
+    ZA_AUTO2 target                     ; local: the speed to hold
+
+    LDA ArrestState:CMP #1:BEQ pull
+    LDA #0
+    RTS
+.pull
+    LDA ObjLat:CMP #&23:BEQ across
+    LDX #5:BCC @+
+    LDX #&FB                            ; (-5)
+.@
+    TXA:CLC:ADC ObjLat:STA ObjLat
+.across
+    LDX #KeyAccel OR KeyRight
+    LDA RoadX:CMP #LO(&110):LDA RoadX+1:SBC #HI(&110):BCS steered
+    LDX #KeyAccel OR KeyLeft
+    LDA RoadX:CMP #LO(&101):LDA RoadX+1:SBC #HI(&101):BCC steered
+    LDX #KeyAccel
+.steered
+    STX keys
+    LDA ObjDLo:CMP #1:LDA ObjDHi:ADC #0:STA row
+    TXA:AND #KeyLeft OR KeyRight:BNE speed
+    LDA row:CMP #3:BCS speed
+    DEC ArrestCount:BNE speed
+
+    \\ the stop
+
+    LDA #0
+    STA RoadSpeed:STA RoadSpeed+1:STA CrimVel:STA CrimVel+1:STA ObjDLo
+    LDA #1:STA ObjDHi
+    LDA #2:STA ArrestState
+    LDA #3:STA CarScreech
+    LDA #0
+    RTS
+
+    \\ the speed: the target, the accelerator off at it, the brake 50 above; the gear as the demo's
+
+.speed
+    LDA #LO(350):STA target
+    LDA #HI(350):STA target+1
+    LDA row:CMP #15:BCS targeted
+    CMP #14:BNE @+
+    LDA #&FF:STA target+1               ; (14: no limit)
+    BNE targeted                        ; always
+.@
+    STA target                          ; 69 + 20 row (to 329)
+    ASL A:ASL A:ADC target:STA target   ; (C clear) row * 5
+    LDA #0:STA target+1
+    ASL target:ROL target+1:ASL target:ROL target+1
+    LDA target:CLC:ADC #69:STA target
+    BCC targeted
+    INC target+1
+.targeted
+    LDA RoadSpeed:CMP target
+    LDA RoadSpeed+1:SBC target+1
+    BCC gear
+    LDA keys:AND #&FF EOR KeyAccel:STA keys ; (at the target: off)
+    LDA target:CLC:ADC #50:STA target
+    BCC @+
+    INC target+1
+.@
+    LDA RoadSpeed:CMP target
+    LDA RoadSpeed+1:SBC target+1
+    BCC gear
+    LDA keys:ORA #KeyBrake:STA keys
+.gear
+    LDA RoadSpeed:CMP #150
+    LDA RoadSpeed+1:SBC #0              ; (C: 150 or more)
+    LDA #0:ROL A
+    EOR CarGear:BEQ @+                  ; (fast in LO, or slow in HI: the gear)
+    LDA keys:ORA #KeyGear:STA keys
+.@
+
+    \\ the criminal 5 slower a loop, to 70
+
+    LDA CrimVel+1:BNE slower
+    LDA CrimVel:CMP #71:BCC done
+.slower
+    LDA CrimVel:SEC:SBC #5:STA CrimVel
+    BCS done
+    DEC CrimVel+1
+.done
+    LDA keys
+    RTS
+}
+
+FUNCTION LoopValue(a) = 10 * (a >> 4) + (a AND 15)
+
+.LoopScore                                  ; (speed AND &7F) / 2 -> its score, BCD (the CPC's: a sawtooth)
+    EQUB (LoopValue(0..63) DIV 10) * 16 + LoopValue(0..63) MOD 10
+
+\\ Add A (BCD) to the score's lowest byte (add_score0), the next (add_score1) or the one after (add_score2),
+\\ carrying up. Decimal mode on.
+\\
+\\ Inputs:
+\\     A: BCD, 0-99
+\\     C: clear (add_score0 clears it), or the carry in
+\\     D: set
+\\
+\\ Outputs:
+\\     Score
+\\     A: corrupted
+
+.add_score0
+{
+    CLC:ADC Score:STA Score
+    LDA #0
+}
+.add_score1
+{
+    ADC Score+1:STA Score+1
+    LDA #0
+}
+.add_score2
+{
+    ADC Score+2:STA Score+2
+    LDA Score+3:ADC #0:STA Score+3
+    RTS
+}
+
+\\ A distance to Dist's 4 BCD digits, by counting off 1,000s, 100s and 10s.
+\\
+\\ Inputs:
+\\     A: the distance's low byte; X: its high, 0-3 (more is shown as 1,023)
+\\
+\\ Outputs:
+\\     Dist
+\\     A, X, Y: corrupted
+
+.to_bcd
+{
+    ZA_AUTO2 v                              ; local: what's left
+    ZA_AUTO1 digits                         ; local: the digits so far, shifted up
+
+    STA v:STX v+1
+    CPX #4:BCC @+
+    LDA #&FF:STA v                          ; (the panel's limit)
+    LDA #3:STA v+1
+.@
+    LDY #0
+.place
+    LDX #0
+.count
+    LDA v:SEC:SBC PowersLo,Y:STA digits     ; (digits: a scratch for the low byte)
+    LDA v+1:SBC PowersHi,Y
+    BCC counted
+    STA v+1
+    LDA digits:STA v
+    INX
+    BNE count                               ; always
+.counted
+    TXA
+    CPY #0:BEQ thousands
+    CPY #1:BEQ hundreds
+    ASL A:ASL A:ASL A:ASL A                 ; tens: with the units, the low byte
+    ORA v:STA Dist
+    RTS
+.thousands
+    ASL A:ASL A:ASL A:ASL A:STA Dist+1
+    INY:BNE place                           ; always
+.hundreds
+    ORA Dist+1:STA Dist+1
+    INY:BNE place                           ; always
+}
+
+.PowersLo                                   ; 1,000, 100, 10
+    EQUB LO(1000), LO(100), LO(10)
+.PowersHi
+    EQUB HI(1000), HI(100), HI(10)

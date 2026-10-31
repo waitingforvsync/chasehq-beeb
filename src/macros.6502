@@ -1,0 +1,66 @@
+\\ macros.6502 - macros and functions for any file.
+
+\\ A MODE 2 byte's bits for one pixel of logical colour c: the right pixel's, or (shifted up one)
+\\ the left's.
+
+FUNCTION RightPixel(c) = (c AND 1) + (c AND 2) * 2 + (c AND 4) * 4 + (c AND 8) * 8
+FUNCTION Mode2Byte(left, right) = RightPixel(left) * 2 + RightPixel(right)
+
+\\ Pad with zeroes up to an address, saying how many bytes it wasted: for fitting routines into the
+\\ gaps before fixed addresses.
+\\
+\\ Inputs:
+\\     addr: the address, P% or on
+\\
+\\ Outputs:
+\\     P%: addr
+
+MACRO PADTO addr
+    ASSERT P% <= addr, "PADTO &", ~addr, ": already ", P% - addr, " bytes past"
+    PRINT "PADTO &", ~addr, ": ", addr - P%, " bytes free at &", ~P%
+    SKIPTO addr
+ENDMACRO
+
+\\ Pad with zeroes to the next address with a given low byte, saying how many bytes it wasted: for code
+\\ kept at the page offset its branches' page crossings were tuned for.
+\\
+\\ Inputs:
+\\     lo: the low byte, 0-255
+\\
+\\ Outputs:
+\\     P%: the next address, P% or on, whose low byte is lo
+
+MACRO PADTOLOW lo
+    ASSERT lo >= 0 AND lo <= &FF, "PADTOLOW: a low byte"
+    PRINT "PADTOLOW &", ~lo, ": ", (lo - P%) AND &FF, " bytes free at &", ~P%
+    SKIP (lo - P%) AND &FF
+ENDMACRO
+
+\\ Skip to the next page if the next n bytes would cross into it: for a table read indexed, so no read
+\\ of it crosses a page. Wastes up to n - 1 bytes; in a virtual section, none of the image.
+\\
+\\ Inputs:
+\\     n: the table's bytes, 1-256
+\\
+\\ Outputs:
+\\     P%: as it was, or the next page's start
+
+MACRO INPAGE n
+    ASSERT n >= 1 AND n <= &100, "INPAGE: 1 to 256 bytes"
+    IF HI(P%) <> HI(P% + n - 1)
+        ALIGN &100
+    ENDIF
+ENDMACRO
+
+\\ Check that the branch just assembled stays on its page when taken: across one, it costs a cycle.
+\\ For the hot loops' branches.
+\\
+\\ Inputs:
+\\     target: where it branches to
+\\
+\\ Outputs:
+\\     none
+
+MACRO SAME_PAGE target
+    ASSERT HI(target) == HI(P%), "a hot branch crosses a page"
+ENDMACRO

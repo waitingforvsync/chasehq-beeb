@@ -1,0 +1,1444 @@
+\\ road.6502 - the course and the road's geometry (docs/cpc-road.md): the streams decoded a segment at a time
+\\ into a window of 32, the advance and the horizon, and each frame the boundaries and the edge tables.
+
+\\ The window: stream k's value for segment i (0 under the car) at RoadWindow + ((RoadSeg + Win + i) AND 255).
+\\ The edge tables run from the bottom line up, an entry a line drawn (the CPC's, its crest quirk with it).
+
+WinCurve = &00                          ; S1: the curve c, -14 to 14, even
+WinGrade = &20                          ; S2: the gradient h, -8 to 7
+WinFlags = &40                          ; S3: the layout's flags
+WinObjects = &60                        ; S4-S6: roadside objects (not decoded yet: 0)
+EdgeEntries = 128
+LaneEntries = 104                       ; the lane tables' entries, as the CPC's (&30-&FE)
+StartH = 84                             ; the horizon's height at a stage's start (the CPC's &1693)
+LeftOffset = 295                        ; the left edge's X less the right's, on the bottom line
+
+SECTION GameVars
+.RoadWindow                             ; (on a page: GameVarsOrg)
+    SKIP 256
+.EdgeRLo                                ; the right edge, entry by entry from the bottom line up,
+    SKIP EdgeEntries                    ; half-pixels, signed
+.EdgeRHi
+    SKIP EdgeEntries
+.EdgeLLo                                ; and the left
+    SKIP EdgeEntries
+.EdgeLHi
+    SKIP EdgeEntries
+.EdgeR2Lo                               ; a fork's second road's right edge (the CPC's &7F)
+    SKIP EdgeEntries
+.EdgeR2Hi
+    SKIP EdgeEntries
+.ForkRow                                ; the fork's first hold segment's row, 0-21 (the CPC's &179A)
+    SKIP 1
+.ForkSeen                               ; not 0 from a fork's first sight to its commit (&1799)
+    SKIP 1
+.ForkDecided                            ; 1 once the branch is chosen (&179D)
+    SKIP 1
+.ForkBranch                             ; the branch: 0 left, 1 right (&177D)
+    SKIP 1
+.ForkSep                                ; the roads' separation, half-pixels: 16 every 2 segments (&179B);
+    SKIP 2                              ; its top byte not 0, the commit (&179C)
+.ForkHalf                               ; segments towards the next 16, and the interpolation's bit (&168F)
+    SKIP 1
+.ForkNow                                ; the separation this frame, interpolated
+    SKIP 2
+.ForkEvent                              ; the branch + 1 the frame it's chosen (the flow takes it), else 0
+    SKIP 1
+.SegCum                                ; the edge tables' entries to each segment's end (the CPC's &8E4C
+    SKIP 21                             ; after &2BEA's sums): row r's anchors at SegCum[r - 1]
+.CarAnchorL                             ; the sprites' first anchors, where segment 0 ends (the CPC's &7CFE,
+    SKIP 2                              ; &7CFC, which its car tests): the left edge, or in a fork at row 0
+.CarAnchorR                             ; the first road's end; and the right edge, or the second road's
+    SKIP 2                              ; start
+.RoadY                                  ; each boundary's lines below the flat horizon, signed: 96
+    SKIP 23                             ; for the bottom line, then 21 more, then -96
+.RoadD                                  ; the right edge's X step over each segment, signed
+    SKIP 22
+.RoadDL                                 ; the left edge's (d + n)
+    SKIP 22
+.RowXRLo                                ; each row's right edge X (the sprites' anchors: road_rows),
+    SKIP 22                             ; half-pixels, signed
+.RowXRHi
+    SKIP 22
+.RowXLLo                                ; and its left
+    SKIP 22
+.RowXLHi
+    SKIP 22
+.RowScale                               ; each boundary's scale: its line's depth below the flat
+    SKIP 22                             ; horizon (RoadBase's row for the fraction), for the sprites
+.RoadSeg                                ; the segment under the car, the window's base, mod 256
+    SKIP 1
+.RoadFrac                               ; and the fraction of it passed, 1/256ths
+    SKIP 1
+.RoadSpeed                                          ; 1/256ths of a segment a loop, 0-511
+    SKIP 2
+.RoadX                                  ; the right edge's X on the bottom line, half-pixels, signed
+    SKIP 2
+.RoadH                                  ; the horizon's height: backdrop row 0's line, up from the
+    SKIP 2                              ; playfield's bottom, signed
+.RoadH2                                 ; the horizon's move over this segment, -3 to 3 lines
+    SKIP 1
+.RoadHSteps                             ; and the steps of it made
+    SKIP 1
+.RoadHUsed                              ; and the fraction they've used
+    SKIP 1
+.RoadC0                                 ; the curve under the car
+    SKIP 1
+.RoadScroll                             ; the backdrop's scroll, bytes, 0-21
+    SKIP 1
+.RoadScrollCount                        ; loops to its next step
+    SKIP 1
+.RoadEntered                            ; segments entered this loop, 0-2
+    SKIP 1
+.StreamPtrLo                            ; S1-S6: the byte last read
+    SKIP 6
+.StreamPtrHi
+    SKIP 6
+.StreamState                            ; S1, S2, S4-S6: the run, a nybble's count of segments
+    SKIP 6                              ; left (less one) over its value
+.ForkALo                                ; each stream's branches at a fork: left
+    SKIP 6
+.ForkAHi
+    SKIP 6
+.ForkBLo                                ; and right
+    SKIP 6
+.ForkBHi
+    SKIP 6
+.BranchLo                               ; the branch taken (the 01 code goes there)
+    SKIP 6
+.BranchHi
+    SKIP 6
+.S3Left                                 ; S3: segments left in the run after this one
+    SKIP 1
+.S3Pos                                  ; and this one's place in it, 0-2
+    SKIP 1
+.S3Value
+    SKIP 1
+.S6Value                                ; S6: the value it writes, until a code changes it
+    SKIP 1
+.RoadHalf                                           ; 1: S4-S6 parsed at the next segment, 0: zeros there
+    SKIP 1
+.RoadHints                              ; S6's codes 10 on (the CPC's &1759-&175C): the fork's
+    SKIP 4                              ; message, no traffic, the criminal's branch, the branch's
+ENDSECTION
+
+ASSERT LO(RoadWindow) == 0, "the window on a page"
+
+SECTION CodeVars
+.SqLo                                   ; quarter squares, n * n / 4 rounded down, n 0-511 (the
+    SKIP 512                            ; loader's): a product is sq(a + b) - sq(a - b)
+.SqHi
+    SKIP 512
+.Lane1Lo                                ; the lane lines (the CPC's &7B-&7D), from the bottom line
+    SKIP EdgeEntries                    ; up as the edges are: 1/4, 1/2, 3/4 of the way across (the
+                                        ; entries from LaneEntries on never made: the loader's, off the
+                                        ; screen)
+.Lane1Hi
+    SKIP EdgeEntries
+.Lane2Lo
+    SKIP EdgeEntries
+.Lane2Hi
+    SKIP EdgeEntries
+.Lane3Lo
+    SKIP EdgeEntries
+.Lane3Hi
+    SKIP EdgeEntries
+ENDSECTION
+
+ASSERT LO(SqLo) == 0 AND LO(Lane1Lo) == 0, "the squares and the lane tables on pages"
+ASSERT LaneEntries <= EdgeEntries, "the lane tables hold an entry a line"
+
+\\ Start the stage's road (the CPC's &15B8): the streams from their starts, the window filled by entering 32
+\\ segments, the car on the bottom line at the stage's start X, the horizon at its start height.
+\\
+\\ Inputs:
+\\     none
+\\
+\\ Outputs:
+\\     the road's state
+\\     A, X, Y: corrupted
+
+.road_start
+{
+    ZA_AUTO1 left                       ; local: segments still to enter
+
+    LDA #0:TAX
+.clear
+    STA RoadWindow,X
+    INX:BNE clear
+    STA RoadSeg:STA RoadFrac:STA RoadSpeed:STA RoadSpeed+1
+    STA RoadH+1:STA RoadH2:STA RoadHSteps:STA RoadHUsed
+    STA RoadScroll:STA S3Left:STA S6Value
+    STA RoadHints:STA RoadHints+1:STA RoadHints+2:STA RoadHints+3
+    STA ForkSeen:STA ForkDecided:STA ForkBranch:STA ForkSep:STA ForkSep+1:STA ForkEvent
+    LDX #5
+    LDY #10
+.streams
+    STA StreamState,X                   ; (A = 0)
+    LDA RoadStreamStarts,Y:STA StreamPtrLo,X
+    LDA RoadStreamStarts+1,Y:STA StreamPtrHi,X
+    LDA #0
+    DEY:DEY
+    DEX:BPL streams
+    LDA #LO(StageStartX):STA RoadX
+    LDA #HI(StageStartX):STA RoadX+1
+    LDA #StartH:STA RoadH
+    LDA #1:STA RoadScrollCount:STA RoadHalf ; (the first step at once)
+    STA ForkHalf
+    LDA #32:STA left
+.fill
+    JSR enter_segment
+    DEC left:BNE fill
+    RTS
+}
+
+\\ Advance by the speed: a segment entered for the fraction's carry, and another for the speed's bit 8.
+\\
+\\ Inputs:
+\\     RoadSpeed
+\\
+\\ Outputs:
+\\     RoadFrac, RoadEntered, and the window and horizon (enter_segment)
+\\     A, X, Y: corrupted
+
+.road_advance
+{
+    LDA #0:STA RoadEntered
+    LDA RoadFrac:CLC:ADC RoadSpeed:STA RoadFrac
+    BCC @+
+    JSR enter_segment
+.@
+    LDA RoadSpeed+1:LSR A
+    BCS enter_segment                   ; (bit 8: another, then back from there)
+    RTS
+}
+
+\\ Enter the next segment: the streams' values for the segment now 31 ahead; the horizon's move over the one
+\\ left finished, and the next one's latched (the CPC's &3EAD).
+\\
+\\ Inputs:
+\\     the streams, the window, the horizon's state
+\\
+\\ Outputs:
+\\     RoadSeg one on, RoadEntered one more, the window's new segment, RoadH, RoadH2, RoadC0
+\\     A, X, Y: corrupted
+
+.enter_segment
+{
+    ZA_AUTO1 slot                       ; local: the new segment's place in S1's part of the window
+    ZA_AUTO1 t                          ; local: a value
+
+    INC RoadSeg
+    INC RoadEntered
+    LDA RoadSeg:CLC:ADC #31:STA slot
+
+    \\ S1, the curve; S2, the gradient; S3, the flags; S4-S6 not yet
+
+    LDX #0:JSR next_nibble
+    TAX:LDA CurveOf,X
+    LDY slot:STA RoadWindow,Y
+    LDX #1:JSR next_nibble
+    SEC:SBC #8:STA t                    ; h = v - 8
+    LDA slot:CLC:ADC #WinGrade:TAY
+    LDA t:STA RoadWindow,Y
+    JSR next_flags:STA t
+    LDA slot:CLC:ADC #WinFlags:TAY
+    LDA t:STA RoadWindow,Y
+
+    \\ S4-S6, the objects, on alternate segments; the segments between 0
+
+    LDA RoadHalf:BEQ zeros
+    LDA #0:STA RoadHalf
+    LDX #3:JSR next_nibble:STA t
+    LDA slot:CLC:ADC #WinObjects:TAY
+    LDA t:STA RoadWindow,Y
+    LDX #4:JSR next_nibble:STA t
+    LDA slot:CLC:ADC #WinObjects+&20:TAY
+    LDA t:STA RoadWindow,Y
+    JSR next_s6:STA t
+    LDA slot:CLC:ADC #WinObjects+&40:TAY
+    LDA t:STA RoadWindow,Y
+    JMP objects
+.zeros
+    LDA #1:STA RoadHalf
+    LDA slot:CLC:ADC #WinObjects:TAY
+    LDX #2
+.zero
+    LDA #0:STA RoadWindow,Y
+    TYA:CLC:ADC #&20:TAY
+    DEX:BPL zero
+.objects
+
+    \\ the horizon: the last segment's move finished (its steps not yet made), then the next one's latched,
+    \\ half the gradient two ahead, rounded toward 0
+
+    LDA RoadH2:BEQ settled
+    BPL rising
+    CLC:ADC RoadHSteps                  ; h2 + steps: what's left, negative
+    BEQ settled
+    CLC:ADC RoadH:STA RoadH
+    BCS settled                         ; (a negative added: carry set unless it crossed 0)
+    DEC RoadH+1
+    BCC settled                         ; always
+.rising
+    SEC:SBC RoadHSteps
+    BEQ settled
+    CLC:ADC RoadH:STA RoadH
+    BCC settled
+    INC RoadH+1
+.settled
+    LDA RoadSeg:CLC:ADC #WinGrade+2:TAY
+    LDA RoadWindow,Y
+    CMP #&80:ROR A                      ; halved, rounded down
+    BPL @+
+    CLC:ADC #1                          ; (negative: rounded up)
+.@
+    STA RoadH2
+    LDA #0:STA RoadHSteps:STA RoadHUsed
+    LDA RoadSeg:CLC:ADC #WinGrade:TAY
+    LDA RoadWindow,Y                    ; the new segment's gradient
+    JSR car_segment                     ; the drift owed for the last, the new one's pitch
+    JMP road_c0
+}
+
+\\ The curve under the car (the CPC's &3F4C): the window's, negated on a fork's right branch once it's chosen
+\\ (the car follows the second road, whose curves are negated).
+\\
+\\ Inputs:
+\\     RoadSeg, the window's curves, the fork's state
+\\
+\\ Outputs:
+\\     RoadC0
+\\     A, Y: corrupted
+
+.road_c0
+{
+    LDY RoadSeg:LDA RoadWindow,Y        ; (WinCurve = 0)
+    LDY ForkSeen:BEQ @+
+    LDY ForkDecided:BEQ @+
+    LDY ForkBranch:BEQ @+
+    EOR #&FF:CLC:ADC #1
+.@
+    STA RoadC0
+    RTS
+}
+
+\\ The fork (the CPC's &3FCF, &402C): the first window row whose flags have &E1 all set. There (unless it's its
+\\ run's first segment) the branch is chosen once, by RoadX: right under &10C; and the separation grows, 16
+\\ every 2 segments entered, interpolated by the fraction: sep + ((ForkHalf AND 1) * 8 + RoadFrac / 32) - 16.
+\\
+\\ Inputs:
+\\     RoadSeg, RoadFrac, RoadEntered, RoadX, the window's flags, the fork's state
+\\
+\\ Outputs:
+\\     C: set if there's a fork, ForkRow its row, ForkNow its separation
+\\     the fork's state; ForkEvent the branch + 1 the frame it's chosen
+\\     A, X, Y: corrupted
+
+.road_fork
+{
+    LDA #0:STA ForkEvent
+    LDA RoadSeg:CLC:ADC #WinFlags:TAY
+    LDX #0
+.find
+    LDA RoadWindow,Y:AND #&E1:CMP #&E1:BEQ found
+    INY
+    INX:CPX #22:BNE find
+    CLC
+    RTS
+.found
+    STX ForkRow
+    LDA #&60:STA ForkSeen
+    LDA ForkSep:STA ForkNow
+    LDA ForkSep+1:STA ForkNow+1
+    LDA RoadWindow,Y:AND #4:BNE done    ; (its run's first segment: the separation as it is)
+    LDA ForkDecided:BNE grow
+    INC ForkDecided
+    LDA RoadX:CMP #LO(&10C)
+    LDA RoadX+1:SBC #HI(&10C)           ; (C clear: under &10C)
+    LDA #0:ROL A:EOR #1:STA ForkBranch
+    CLC:ADC #1:STA ForkEvent
+    JSR road_c0
+.grow
+    LDA RoadEntered:BEQ interp
+    CLC:ADC ForkHalf
+    CMP #2:BCC half
+    SBC #2                              ; (C set)
+    TAX
+    LDA ForkSep:CLC:ADC #16:STA ForkSep
+    BCC @+
+    INC ForkSep+1
+.@
+    TXA
+.half
+    STA ForkHalf
+.interp
+    LDA ForkHalf:LSR A                  ; (C: its bit 0)
+    LDA RoadFrac:ROL A:ROL A:ROL A:ROL A
+    AND #15                             ; (ForkHalf AND 1) * 8 + RoadFrac / 32
+    SEC:SBC #16
+    CLC:ADC ForkSep:STA ForkNow
+    LDA ForkSep+1:ADC #&FF:STA ForkNow+1
+.done
+    SEC
+    RTS
+}
+
+\\ A fork passed (the CPC's &4144, after the flip): once the separation's past 255, the streams go on to the
+\\ branch: each one's 01 code continues at the address its fork code recorded for the branch, and each starts
+\\ on a short lead-in to it; the window's 32 rows from the car's become the branch's half of the road (curve
+\\ -4 left, +4 right; flags &01 or &03; the other side's objects, S5 or S4, gone); the runs and the fork's
+\\ state start again.
+\\
+\\ Inputs:
+\\     the fork's state
+\\
+\\ Outputs:
+\\     the streams, the window, the fork's state
+\\     A, X, Y: corrupted
+
+.road_commit
+{
+    ZA_AUTO1 row                        ; local: the window's next row
+    ZA_AUTO1 curve, flags, gone         ; local: what the rows get
+
+    LDA ForkSep+1:BNE commit
+    RTS
+.commit
+    LDX #5
+    LDA ForkBranch:BNE right
+.left
+    LDA ForkALo,X:STA BranchLo,X
+    LDA ForkAHi,X:STA BranchHi,X
+    LDA LeadLeftLo,X:STA StreamPtrLo,X
+    LDA LeadLeftHi,X:STA StreamPtrHi,X
+    LDA #0:STA StreamState,X
+    DEX:BPL left
+    BMI window                          ; always
+.right
+    LDA ForkBLo,X:STA BranchLo,X
+    LDA ForkBHi,X:STA BranchHi,X
+    LDA LeadRightLo,X:STA StreamPtrLo,X
+    LDA LeadRightHi,X:STA StreamPtrHi,X
+    LDA #0:STA StreamState,X
+    DEX:BPL right
+.window
+    LDY ForkBranch
+    LDA CommitCurve,Y:STA curve
+    LDA CommitFlags,Y:STA flags
+    LDA CommitGone,Y:STA gone
+    LDA RoadSeg:STA row
+    LDX #32
+.rows
+    LDY row
+    LDA curve:STA RoadWindow,Y          ; (WinCurve = 0)
+    TYA:CLC:ADC #WinFlags:TAY
+    LDA flags:STA RoadWindow,Y
+    LDA row:CLC:ADC gone:TAY
+    LDA #0:STA RoadWindow,Y
+    INC row
+    DEX:BNE rows
+    STA S3Left                          ; (A = 0: S3's run too)
+    STA ForkSeen:STA ForkDecided:STA ForkBranch:STA ForkSep:STA ForkSep+1
+    LDA #1:STA RoadHalf:STA ForkHalf
+    RTS
+}
+
+.CommitCurve                            ; by branch: the window's curve, flags and the objects gone
+    EQUB -4 AND &FF, 4
+.CommitFlags
+    EQUB &01, &03
+.CommitGone
+    EQUB WinObjects + &20, WinObjects   ; (S5 left, S4 right)
+
+LeadLeft = {RoadLeadS1, RoadLeadS2, RoadLeadS3L, RoadLeadS4L, RoadLeadS5L, RoadLeadS6}
+LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, RoadLeadS6}
+.LeadLeftLo                             ; each stream's lead-in to the branch
+    EQUB LO(LeadLeft)
+.LeadLeftHi
+    EQUB HI(LeadLeft)
+.LeadRightLo
+    EQUB LO(LeadRight)
+.LeadRightHi
+    EQUB HI(LeadRight)
+
+
+.CurveOf                                ; S1's nybble: (v AND 8 ? -(v AND 7) : v) * 2
+    EQUB 0, 2, 4, 6, 8, 10, 12, 14, 0, -2 AND &FF, -4 AND &FF, -6 AND &FF, -8 AND &FF
+    EQUB -10 AND &FF, -12 AND &FF, -14 AND &FF
+
+\\ The next byte of stream X, the pointer moved onto it.
+\\
+\\ Inputs:
+\\     X: the stream, 0-5
+\\
+\\ Outputs:
+\\     A: the byte, Z from it
+\\     Y: 0
+\\     X: preserved
+
+.next_byte
+{
+    ZA_AUTO2 at                         ; local: the byte's address
+
+    INC StreamPtrLo,X
+    BNE @+
+    INC StreamPtrHi,X
+.@
+    LDA StreamPtrLo,X:STA at
+    LDA StreamPtrHi,X:STA at+1
+    LDY #0:LDA (at),Y
+    RTS
+}
+
+\\ A control code, after a 0 where a run was due: 0 a jump, 1 on to the branch taken at the fork, 2 a fork (its
+\\ two branches kept, the stream held meanwhile).
+\\
+\\ Inputs:
+\\     X: the stream, 0-5
+\\
+\\ Outputs:
+\\     the stream's pointer, ready for its next run
+\\     A, Y: corrupted
+\\     X: preserved
+
+.stream_control
+{
+    ZA_AUTO1 lo                         ; local: an address's low byte
+
+    JSR next_byte
+.code                                   ; (S6 comes in here, its code read)
+    BEQ jump
+    CMP #1:BEQ branch
+    JSR next_byte:STA ForkALo,X         ; (2) a fork: the left branch's address
+    JSR next_byte:STA ForkAHi,X
+    JSR next_byte:STA ForkBLo,X         ; and the right's
+    JSR next_byte:STA ForkBHi,X
+    LDA HoldLo,X:STA StreamPtrLo,X      ; held meanwhile
+    LDA HoldHi,X:STA StreamPtrHi,X
+    RTS
+.branch
+    LDA BranchLo,X:LDY BranchHi,X
+    JMP to
+.jump
+    JSR next_byte:STA lo
+    JSR next_byte:TAY
+    LDA lo
+.to
+    SEC:SBC #1:STA StreamPtrLo,X        ; the byte before the target (it's the next read)
+    BCS @+
+    DEY
+.@
+    TYA:STA StreamPtrHi,X
+    RTS
+}
+
+.HoldLo                                 ; each stream's hold sequence, while a fork's ahead
+    EQUB LO(RoadLeadHoldS1), LO(RoadLeadHoldS2), LO(RoadLeadHoldS3)
+    EQUB LO(RoadLeadHoldS4), LO(RoadLeadHoldS5), LO(RoadLeadHoldS6)
+.HoldHi
+    EQUB HI(RoadLeadHoldS1), HI(RoadLeadHoldS2), HI(RoadLeadHoldS3)
+    EQUB HI(RoadLeadHoldS4), HI(RoadLeadHoldS5), HI(RoadLeadHoldS6)
+
+\\ The next segment's nybble from a stream of nybble runs: a byte a run, its high nybble the segments (0 for
+\\ 16), its low the value. The state keeps the run's byte less 16 a segment: a borrow ends it.
+\\
+\\ Inputs:
+\\     X: the stream
+\\
+\\ Outputs:
+\\     A: the value, 0-15
+\\     Y: corrupted
+\\     X: preserved
+
+.next_nibble
+{
+    LDA StreamState,X
+    SEC:SBC #&10
+    BCS have                            ; the run's next segment
+.read
+    JSR next_byte
+    BNE run
+    JSR stream_control
+    JMP read
+.run
+    SEC:SBC #&10                        ; (a high nybble of 0 wraps round to 15 more)
+.have
+    STA StreamState,X
+    AND #&0F
+    RTS
+}
+
+\\ The next segment's flags from S3, count-value pairs: a run's first segment has bit 3 of its value clear, its
+\\ second bit 2, the rest both.
+\\
+\\ Inputs:
+\\     S3's state
+\\
+\\ Outputs:
+\\     A: the flags
+\\     X, Y: corrupted
+
+.next_flags
+{
+    LDX #2
+    LDA S3Left:BEQ newrun
+    DEC S3Left
+    LDY S3Pos
+    CPY #2:BCS value
+    INY:STY S3Pos
+    BNE value                           ; always
+.newrun
+    JSR next_byte
+    BNE count
+    JSR stream_control
+    JMP newrun
+.count
+    SEC:SBC #1:STA S3Left               ; (counts are 1-255)
+    JSR next_byte:STA S3Value
+    LDY #0:STY S3Pos                    ; (next_byte leaves Y = 0)
+.value
+    LDA S3Value:AND RunClear,Y
+    RTS
+}
+
+.RunClear
+    EQUB &F7, &FB, &F3                  ; a run's first segment, its second, the rest
+
+\\ The next segment's value from S6: counts of segments, each run writing the value until a code changes
+\\ it. After a 0: 0-2 the controls, 3-9 a new value (0-6), 10-12 the branch hint (and the criminal's branch
+\\ when not 0), 13-14 traffic on or off, 15 on the fork's message.
+\\
+\\ Inputs:
+\\     S6's state
+\\
+\\ Outputs:
+\\     A: the value
+\\     S6Value, RoadHints
+\\     X, Y: corrupted
+
+.next_s6
+{
+    LDX #5
+    LDA StreamState+5
+    SEC:SBC #1
+    BCS have                            ; the run's next segment
+.read
+    JSR next_byte
+    BNE count
+    JSR next_byte                       ; a code
+    CMP #3:BCS valued
+    JSR stream_control.code
+    JMP read
+.valued
+    SEC:SBC #3
+    CMP #7:BCS hint
+    STA S6Value
+    JMP read
+.hint
+    SEC:SBC #7
+    CMP #3:BCS traffic
+    STA RoadHints+3                         ; 10-12: the branch hint
+    BEQ read
+    STA RoadHints+2                     ; and the criminal's branch
+    JMP read
+.traffic
+    SEC:SBC #3
+    CMP #2:BCS message
+    STA RoadHints+1                         ; 13, 14: traffic on or off
+    JMP read
+.message
+    SBC #1                              ; (C set: 15 on, 1 up)
+    STA RoadHints
+    JMP read
+.count
+    SEC:SBC #1
+.have
+    STA StreamState+5
+    LDA S6Value
+    RTS
+}
+
+\\ The loop's horizon and backdrop (the CPC's &3E23), when moving: on a curve the backdrop scrolls a step each
+\\ period (both from the curve and the speed); on a gradient the horizon steps once each time the fraction
+\\ passes another unit (85, 127 or 255 for a move of 3, 2 or 1 lines a segment).
+\\
+\\ Inputs:
+\\     RoadSpeed, RoadFrac, RoadC0, RoadH2
+\\
+\\ Outputs:
+\\     RoadScroll, RoadScrollCount, RoadH, RoadHSteps, RoadHUsed
+\\     A, X, Y: corrupted
+
+.road_horizon
+{
+    ZA_AUTO1 t                          ; local: 4|c|, then the steps down
+    ZA_AUTO1 unit                       ; local: the fraction a step
+
+    LDA RoadSpeed:ORA RoadSpeed+1
+    BNE @+
+    RTS
+.@
+
+    \\ the backdrop: row 4|c| + 2 (speed >> 7) of the table, (period, step); against the curve, mod 22
+
+    LDA RoadC0:BEQ horizon
+    BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    ASL A:ASL A:STA t
+    LDA RoadSpeed:ASL A                 ; (speed's bit 7 into C)
+    LDA RoadSpeed+1:ROL A:ASL A             ; 2 (speed >> 7)
+    ADC t:TAX                           ; (C clear)
+    DEC RoadScrollCount
+    BNE horizon
+    LDA RoadScrollTab,X:STA RoadScrollCount
+    LDA RoadC0:BMI scrollup
+    LDA RoadScroll:SEC:SBC RoadScrollTab+1,X
+    BCS scrolled
+    ADC #22                             ; (C clear)
+    BCC scrolled                        ; always
+.scrollup
+    LDA RoadScroll:CLC:ADC RoadScrollTab+1,X
+    CMP #22:BCC scrolled
+    SBC #22                             ; (C set)
+.scrolled
+    STA RoadScroll
+
+    \\ the horizon: the fraction not yet stepped, counted out in units
+
+.horizon
+    LDA RoadH2:BEQ done
+    BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    TAX:LDA RoadScrollTab-1,X:STA unit
+    LDA RoadFrac:SEC:SBC RoadHUsed
+    BEQ done
+    LDX #0
+.count
+    SEC:SBC unit
+    BCC counted
+    INX
+    TAY
+    LDA RoadHUsed:CLC:ADC unit:STA RoadHUsed
+    TYA
+    JMP count
+.counted
+    TXA:BEQ done
+    CLC:ADC RoadHSteps:STA RoadHSteps
+    BIT RoadH2:BMI falling
+    TXA:CLC:ADC RoadH:STA RoadH
+    BCC done
+    INC RoadH+1
+.done
+    RTS
+.falling
+    STX t
+    LDA RoadH:SEC:SBC t:STA RoadH
+    BCS @+
+    DEC RoadH+1
+.@
+    RTS
+}
+
+\\ The boundaries' lines (the CPC's &5260): y = base (1 + C/64), floored, C the road's height against the
+\\ camera in gradient units, summed from the car's segment on.
+\\
+\\ Inputs:
+\\     RoadFrac, RoadSeg, the window's gradients
+\\
+\\ Outputs:
+\\     RoadY
+\\     A, X, Y: corrupted
+
+.road_lines
+{
+    ZA_AUTO1 base                       ; local: the row of the base table for the fraction (f * 22)
+    ZA_AUTO1 c                          ; local: the summed gradient
+    ZA_AUTO1 b, mag                     ; local: base, |c|
+    ZA_AUTO2 prod                       ; local: b |c|
+    ZA_AUTO1 at                         ; local: the next segment's gradient in the window
+
+    LDA RoadFrac:LSR A:LSR A:LSR A:LSR A:LSR A:TAX
+    LDA Times22,X:STA base
+    LDA RoadSeg:CLC:ADC #WinGrade:STA at
+
+    \\ C = -round(f * h0 / 8), f = the fraction's top three bits
+
+    LDY at:LDA RoadWindow,Y:STA c
+    LDA #0
+    CPX #0:BEQ fh
+.fmul
+    CLC:ADC c
+    DEX:BNE fmul
+.fh
+    CMP #&80:ROR A:CMP #&80:ROR A
+    CMP #&80:ROR A                      ; (bit 0 of S/4 into C: rounding)
+    ADC #0
+    EOR #&FF:CLC:ADC #1:STA c
+
+    LDA #96:STA RoadY
+    LDX #1
+.boundary
+    LDY at:LDA RoadWindow,Y             ; the last segment's gradient
+    INC at
+    CLC:ADC c:STA c
+    TXA:CLC:ADC base:TAY
+    LDA RoadBase,Y:STA b
+
+    \\ b |c| by quarter squares, negated for c < 0, then bits 6-13: floor(b c / 64), mod 256
+
+    LDA c:BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    STA mag
+    CLC:ADC b:TAY                       ; b + |c|, at most 224
+    LDA SqLo,Y:STA prod
+    LDA SqHi,Y:STA prod+1
+    LDA b:SEC:SBC mag:BCS @+
+    EOR #&FF:ADC #1                     ; (C clear) |b - |c||
+.@
+    TAY
+    LDA prod:SEC:SBC SqLo,Y:STA prod    ; less its square: b |c|
+    LDA prod+1:SBC SqHi,Y:STA prod+1
+    BIT c:BPL @+
+    LDA prod:EOR #&FF:CLC:ADC #1:STA prod   ; (negated)
+    LDA prod+1:EOR #&FF:ADC #0:STA prod+1
+.@
+    LDA prod:ASL A:ROL prod+1:ASL A:ROL prod+1 ; bits 6-13
+    LDA prod+1:CLC:ADC b:STA RoadY,X
+    INX:CPX #22:BNE boundary
+    LDA #&A0:STA RoadY+22               ; -96: past the last
+    RTS
+}
+
+.Times22
+    EQUB (0..7) * 22
+
+\\ The boundaries' X steps (the CPC's &50FC): each segment heads for the vanishing point of the curvature
+\\ summed so far, closing on it by the perspective fraction m; the left edge narrows by n besides. The fork's
+\\ second road (the CPC's &50F4) negates each segment's curve, but not the starting heading's.
+\\
+\\ Inputs:
+\\     xs: the right edge's X on the bottom line
+\\     neg: 0, or &FF to negate the curves
+\\     RoadFrac, RoadSeg, the window's curves
+\\
+\\ Outputs:
+\\     RoadD, RoadDL, the boundaries' RowScale
+\\     A, X, Y: corrupted
+
+.road_xsteps
+{
+    ZA_AUTO2 xs                         ; in: the right edge's X
+    ZA_AUTO1 neg                        ; in: the curves' sign
+    ZA_AUTO1 base                       ; local: f * 22
+    ZA_AUTO1 theta                      ; local: the heading, even
+    ZA_AUTO1 at                         ; local: the next segment's curve in the window
+    ZA_AUTO2 x                          ; local: the edge's X
+    ZA_AUTO2 diff                       ; local: T - x
+    ZA_AUTO2 p                          ; local: the product, mod 65536
+    ZA_AUTO1 mm                         ; local: m / 4
+    ZA_AUTO1 n                          ; local: n, the left edge's narrowing
+    ZA_AUTO1 hiprod                     ; local: diff's high byte by mm, mod 256
+    ZA_AUTO2 xl                         ; local: the left edge's X
+    ZA_AUTO1 c0                         ; local: the curve under the car
+
+    LDA RoadFrac:LSR A:LSR A:LSR A:LSR A:LSR A:TAX
+    LDA Times22,X:STA base
+    LDA RoadSeg:STA at
+    LDA xs:STA x
+    LDA xs+1:STA x+1
+    LDA xs:SEC:SBC #LO(LeftOffset):STA xl
+    LDA xs+1:SBC #HI(LeftOffset):STA xl+1
+
+    \\ the starting heading: 128 - round(7 c0 / 8), even, c0 the window's (not RoadC0, a fork's negation)
+
+    LDY RoadSeg:LDA RoadWindow,Y:STA c0
+    ASL A:ASL A:ASL A
+    SEC:SBC c0                          ; 7 c0 (fits: |c0| <= 14)
+    CMP #&80:ROR A:CMP #&80:ROR A
+    CMP #&80:ROR A
+    ADC #0                              ; round(7 c0 / 8)
+    EOR #&FF:SEC:ADC #&80                   ; 128 - that
+    AND #&FE:STA theta
+
+    LDX #0
+.segment
+    LDY at:INC at
+    LDA neg:LSR A                       ; (C: 1 negating, for the EOR's + 1)
+    LDA RoadWindow,Y:EOR neg
+    ADC theta:STA theta
+    TAY
+    LDA RoadT,Y:SEC:SBC x:STA diff
+    LDA RoadT+1,Y:SBC x+1:STA diff+1
+    TXA:CLC:ADC base:TAY
+    LDA RoadBase,Y:STA RowScale,X
+    LDA RoadN,Y:STA n
+    LDA RoadM,Y:LSR A:LSR A:STA mm
+
+    \\ p = diff * mm, mod 65536, by quarter squares: diff's low byte by mm, plus its high byte's (mod 256)
+    \\ times 256
+
+    LDA diff:CLC:ADC mm:TAY             ; (C: past 255)
+    BCS lowsum
+    LDA SqLo,Y:STA p
+    LDA SqHi,Y:STA p+1
+    JMP lowdiff
+.lowsum
+    LDA SqLo+256,Y:STA p
+    LDA SqHi+256,Y:STA p+1
+.lowdiff
+    LDA diff:SEC:SBC mm:BCS @+
+    EOR #&FF:ADC #1                     ; (C clear)
+.@
+    TAY
+    LDA p:SEC:SBC SqLo,Y:STA p
+    LDA p+1:SBC SqHi,Y:STA p+1
+    LDA diff+1:CLC:ADC mm:TAY
+    BCS highsum
+    LDA SqLo,Y
+    JMP highdiff
+.highsum
+    LDA SqLo+256,Y
+.highdiff
+    STA hiprod
+    LDA diff+1:SEC:SBC mm:BCS @+
+    EOR #&FF:ADC #1
+.@
+    TAY
+    LDA hiprod:SEC:SBC SqLo,Y
+    CLC:ADC p+1:STA p+1
+
+    \\ d = p / 256, rounded; x on by it; the left's d + n
+
+    LDA p:ASL A                         ; (bit 7 into C)
+    LDA p+1:ADC #0:STA RoadD,X
+    CLC:ADC n:STA RoadDL,X
+    BPL @+
+    DEC xl+1
+.@
+    CLC:ADC xl:STA xl
+    BCC @+
+    INC xl+1
+.@
+    LDA RoadD,X
+    CLC:ADC x:STA x
+    LDA RoadD,X:AND #&80:BEQ @+
+    LDA #&FF
+.@
+    ADC x+1:STA x+1
+    INX:CPX #22:BEQ @+
+    JMP segment                         ; (the loop's past a branch's reach: inverted round a JMP)
+.@
+    RTS
+}
+
+\\ One edge's table (the CPC's &51CE), entry by entry from the bottom line up: each segment's lines stepped
+\\ by Bresenham from one boundary's X to the next; a segment of under two lines (less any a crest before it
+\\ owes) gives one entry, at the next boundary's X. edge_target points it at its steps and its table.
+\\
+\\ Inputs:
+\\     x: the edge's X on the bottom line
+\\     its steps and table, patched in (edge_target)
+\\
+\\ Outputs:
+\\     the table's entries; X: the entries made
+\\     x: corrupted
+\\     A, Y: corrupted
+
+.edge_table
+{
+    ZA_AUTO2 x                          ; in: the edge's X
+    ZA_AUTO1 j                          ; local: the segment
+    ZA_AUTO1 owed                       ; local: lines owed by a crest, 0 or less
+    ZA_AUTO1 lines, step, acc, down     ; local: the segment's lines, |d|, Bresenham's sum, d's sign
+    ZA_AUTO1 q                          ; local: steep: the steps every line
+
+    LDA #0:STA j:STA owed
+    TAX
+.segment
+    LDY j
+    LDA RoadY,Y:SEC:SBC RoadY+1,Y:STA lines ; y[j] - y[j+1]
+    CLC:ADC owed
+    SEC:SBC #2
+    BPL drawn
+
+    \\ under two lines: one entry, at the next boundary's X
+
+    CLC:ADC #2                          ; owed + lines
+    BMI @+
+    BEQ @+
+    LDA #0
+.@
+    STA owed
+.steps1
+    LDA RoadD,Y:STA down                ; self-modified: the steps (RoadD or RoadDL)
+    CLC:ADC x:STA x
+    LDA #0:BIT down:BPL @+
+    LDA #&FF
+.@
+    ADC x+1:STA x+1
+    LDA x
+.lo1
+    STA &FFFF,X                         ; self-modified: the table's low bytes
+    LDA x+1
+.hi1
+    STA &FFFF,X                         ; self-modified: its high bytes
+    INX
+    JMP next
+
+    \\ a segment of lines: x stepped by d over them, one entry a line
+
+.drawn
+    LDA #0:STA owed
+.steps2
+    LDA RoadD,Y:STA down                ; self-modified: the steps (RoadD or RoadDL)
+    BPL @+
+    EOR #&FF:CLC:ADC #1
+.@
+    STA step
+    CMP lines:BEQ shallow
+    BCS steep
+
+    \\ |d| at most the lines: a step on some lines. The sum is kept less the lines (+256), so its carry is
+    \\ the step; a loop for each sign, its constants patched in
+
+.shallow
+    BIT down:BMI sminus
+    STA pstep+1                         ; |d|
+    LDA #255:SEC:SBC lines:STA pback+1  ; 255 - the lines (with C set, less the lines)
+    TXA:CLC:ADC lines:STA pend+1        ; the entry past the segment's
+    LDA lines:LSR A:SEC:SBC lines:TAY   ; the sum: half the lines, less the lines
+    CLC
+.ploop
+    TYA
+.pstep
+    ADC #0                              ; self-modified: |d|
+    BCC pemit
+.pback
+    ADC #0                              ; self-modified: 255 - the lines (C clear after)
+    INC x:BNE pemit
+    INC x+1
+.pemit
+    TAY
+    LDA x
+.lo2
+    STA &FFFF,X                         ; self-modified: the table's low bytes
+    LDA x+1
+.hi2
+    STA &FFFF,X                         ; self-modified: its high bytes
+    INX
+.pend
+    CPX #0:BCC ploop                    ; self-modified: the end (C clear going round)
+    JMP next
+.sminus
+    STA mstep+1
+    LDA #255:SEC:SBC lines:STA mback+1
+    TXA:CLC:ADC lines:STA mend+1
+    LDA lines:LSR A:SEC:SBC lines:TAY
+    CLC
+.mloop
+    TYA
+.mstep
+    ADC #0                              ; self-modified: |d|
+    BCC mnostep
+.mback
+    ADC #0                              ; self-modified: 255 - the lines
+    TAY
+    LDA x:BNE @+
+    DEC x+1
+.@
+    DEC x
+    JMP memit
+.mnostep
+    TAY
+.memit
+    LDA x
+.lo3
+    STA &FFFF,X                         ; self-modified: the table's low bytes
+    LDA x+1
+.hi3
+    STA &FFFF,X                         ; self-modified: its high bytes
+    INX
+.mend
+    CPX #0:BCC mloop                    ; self-modified: the end
+    JMP next
+
+    \\ |d| over the lines: q = |d| / lines steps every line, and one more as the remainder adds up past
+    \\ the lines (the CPC's steps one at a time to the same places)
+
+.steep
+    LDA step:LDY #0
+.divide
+    CMP lines:BCC divided
+    SBC lines:INY                       ; (C set)
+    BCS divide                          ; always
+.divided
+    STA step:STY q                      ; (step: the remainder from here)
+    LDA #0:STA acc
+    LDY lines
+    BIT down:BMI tminus
+.tplus
+    LDA acc:SEC:SBC step:BCS @+
+    ADC lines:STA acc                   ; (C clear) a borrow: one more step
+    LDA x:SEC:ADC q:STA x
+    BCC temit
+    INC x+1
+    BCS temit                           ; always
+.@
+    STA acc
+    LDA x:CLC:ADC q:STA x
+    BCC temit
+    INC x+1
+.temit
+    LDA x
+.lo4
+    STA &FFFF,X                         ; self-modified: the table's low bytes
+    LDA x+1
+.hi4
+    STA &FFFF,X                         ; self-modified: its high bytes
+    INX
+    DEY:BNE tplus
+    JMP next
+.tminus
+    LDA acc:SEC:SBC step:BCS @+
+    ADC lines:STA acc
+    LDA x:CLC:SBC q:STA x               ; (less q + 1)
+    BCS tmemit
+    DEC x+1
+    BCC tmemit                          ; always
+.@
+    STA acc
+    LDA x:SEC:SBC q:STA x
+    BCS tmemit
+    DEC x+1
+.tmemit
+    LDA x
+.lo5
+    STA &FFFF,X                         ; self-modified: the table's low bytes
+    LDA x+1
+.hi5
+    STA &FFFF,X                         ; self-modified: its high bytes
+    INX
+    DEY:BNE tminus
+
+.next
+    LDY j:TXA:STA SegCum,Y              ; (the entries to the segment's end: the anchors' places)
+    INC j
+    LDA j:CMP #21:BEQ done
+    JMP segment
+.done
+    RTS
+}
+
+\\ Point edge_table at an edge: its steps and its table.
+\\
+\\ Inputs:
+\\     A: 0 the right edge (RoadD into EdgeR), 1 the left (RoadDL into EdgeL), 2 the second road's right
+\\        (RoadD into EdgeR2, the CPC's &7F), 3 its left (RoadDL into Lane3, the CPC's &7D)
+\\
+\\ Outputs:
+\\     edge_table's operands
+\\     A, Y: corrupted
+
+.edge_target
+{
+    TAY
+    LDA EdgeTabLoL,Y
+    FOR site = {edge_table.lo1, edge_table.lo2, edge_table.lo3, edge_table.lo4, edge_table.lo5}
+        STA site+1
+    NEXT
+    LDA EdgeTabLoH,Y
+    FOR site = {edge_table.lo1, edge_table.lo2, edge_table.lo3, edge_table.lo4, edge_table.lo5}
+        STA site+2
+    NEXT
+    LDA EdgeTabHiL,Y
+    FOR site = {edge_table.hi1, edge_table.hi2, edge_table.hi3, edge_table.hi4, edge_table.hi5}
+        STA site+1
+    NEXT
+    LDA EdgeTabHiH,Y
+    FOR site = {edge_table.hi1, edge_table.hi2, edge_table.hi3, edge_table.hi4, edge_table.hi5}
+        STA site+2
+    NEXT
+    TYA:AND #1:TAY                      ; (the steps: RoadD for a right edge, RoadDL for a left)
+    LDA EdgeStepsL,Y
+    STA edge_table.steps1+1:STA edge_table.steps2+1
+    LDA EdgeStepsH,Y
+    STA edge_table.steps1+2:STA edge_table.steps2+2
+    RTS
+}
+
+EdgeTabLo = {EdgeRLo, EdgeLLo, EdgeR2Lo, Lane3Lo}
+EdgeTabHi = {EdgeRHi, EdgeLHi, EdgeR2Hi, Lane3Hi}
+.EdgeTabLoL
+    EQUB LO(EdgeTabLo)
+.EdgeTabLoH
+    EQUB HI(EdgeTabLo)
+.EdgeTabHiL
+    EQUB LO(EdgeTabHi)
+.EdgeTabHiH
+    EQUB HI(EdgeTabHi)
+.EdgeStepsL
+    EQUB LO(RoadD), LO(RoadDL)
+.EdgeStepsH
+    EQUB HI(RoadD), HI(RoadDL)
+
+\\ One road's edges: its X steps from a right edge's X on the bottom line, its curves as they are or negated,
+\\ then its right and left edges' tables.
+\\
+\\ Inputs:
+\\     road_xsteps.xs: its right edge's X on the bottom line
+\\     road_xsteps.neg: 0, or &FF for the curves negated (the fork's second road)
+\\     A: 0 its tables EdgeR and EdgeL, 2 EdgeR2 and Lane3
+\\
+\\ Outputs:
+\\     RoadD, RoadDL, the boundaries' RowScale; the tables
+\\     A, X, Y: corrupted
+
+.one_road
+{
+    ZA_AUTO1 which                      ; local: the tables
+
+    STA which
+    JSR road_xsteps
+    LDA which:JSR edge_target           ; the right edge
+    LDA road_xsteps.xs:STA edge_table.x
+    LDA road_xsteps.xs+1:STA edge_table.x+1
+    JSR edge_table
+    LDX which:INX:TXA:JSR edge_target   ; the left
+    LDA road_xsteps.xs:SEC:SBC #LO(LeftOffset):STA edge_table.x
+    LDA road_xsteps.xs+1:SBC #HI(LeftOffset):STA edge_table.x+1
+    JMP edge_table
+}
+
+\\ The frame's geometry: the boundaries' lines, the horizon and backdrop's moves, the X steps and the tables;
+\\ at a fork two roads (the CPC's &3FCF): the one the car's on at RoadX, the other sep across, its curves
+\\ negated; the left branch's normal road and the right's negated one (the CPC builds them in that order: the
+\\ second's RowX stands).
+\\
+\\ Inputs:
+\\     the road's state
+\\
+\\ Outputs:
+\\     RoadY, RoadD, RoadDL, the edge and lane tables, RoadH, RoadScroll, the fork's state
+\\     RowScale, for the sprites (their anchors after the renderer: road_rows)
+\\     A, X, Y: corrupted
+
+.road_frame
+{
+    JSR road_lines
+    JSR road_horizon
+    JSR road_fork
+    BCS fork
+    LDA RoadX:STA road_xsteps.xs
+    LDA RoadX+1:STA road_xsteps.xs+1
+    LDA #0:STA road_xsteps.neg
+    JSR one_road
+    LDX #LaneEntries-1
+    JMP road_lanes
+.fork
+    LDA ForkBranch:BNE right
+    LDA RoadX:STA road_xsteps.xs        ; left: the normal road at RoadX, the other sep to the right
+    LDA RoadX+1:STA road_xsteps.xs+1
+    LDA #0:STA road_xsteps.neg
+    JSR one_road
+    LDA RoadX:CLC:ADC ForkNow:STA road_xsteps.xs
+    LDA RoadX+1:ADC ForkNow+1:STA road_xsteps.xs+1
+    LDA #&FF:STA road_xsteps.neg
+    LDA #2:JSR one_road
+    JMP split
+.right
+    LDA RoadX:STA road_xsteps.xs        ; right: the negated road at RoadX, the normal one sep to the left
+    LDA RoadX+1:STA road_xsteps.xs+1
+    LDA #&FF:STA road_xsteps.neg
+    LDA #2:JSR one_road
+    LDA RoadX:SEC:SBC ForkNow:STA road_xsteps.xs
+    LDA RoadX+1:SBC ForkNow+1:STA road_xsteps.xs+1
+    LDA #0:STA road_xsteps.neg
+    JSR one_road
+.split
+    JMP road_split
+}
+
+\\ The rows' anchors (the CPC's &2BEA, after the renderer has drawn any taper into the tables): row r's edges
+\\ where segment r - 1 ends, by that segment's layout (t = 0: the edges; else the left from table t - 1, the
+\\ right past the lane lines: 2 on, 3 with bit 7; with bit 6 the right edge, or in a tunnel 3 on); from a
+\\ fork's row on, the first road's end and the second's start. Row 1's are the car's (CarAnchorL, CarAnchorR,
+\\ the CPC's &7CFE and &7CFC, which its off-road and roadside tests read).
+\\
+\\ Inputs:
+\\     SegCum, RoadSeg, the window's flags, the edge and lane tables, the fork's state
+\\
+\\ Outputs:
+\\     RowXRLo, RowXRHi, RowXLLo, RowXLHi (rows 1-21), CarAnchorL, CarAnchorR
+\\     A, X, Y: corrupted
+
+.road_rows
+{
+    ZA_AUTO2 lo, hi                     ; local: a table's low and high bytes
+    ZA_AUTO1 k, forkfrom                ; local: the segment; the first in the fork (22 none)
+    ZA_AUTO1 left, flagsat              ; local: its left table; its flags' place
+
+    LDA #22:STA forkfrom
+    LDA ForkSeen:BEQ @+
+    LDA ForkRow:STA forkfrom
+.@
+    LDA RoadSeg:CLC:ADC #WinFlags:STA flagsat
+    LDA #0:STA k
+.row
+    LDX k
+    LDY SegCum,X
+    CPX forkfrom:BCC layout
+    LDA Lane2Lo,Y:STA RowXLLo+1,X       ; (the fork: the inner edges)
+    LDA Lane2Hi,Y:STA RowXLHi+1,X
+    LDA Lane3Lo,Y:STA RowXRLo+1,X
+    LDA Lane3Hi,Y:STA RowXRHi+1,X
+    JMP next
+.layout
+    LDA flagsat:CLC:ADC k:TAX
+    LDA RoadWindow,X:TAX
+    AND #3:BNE lanes
+    LDX k                               ; (the full road: the edges)
+    LDA EdgeLLo,Y:STA RowXLLo+1,X
+    LDA EdgeLHi,Y:STA RowXLHi+1,X
+    LDA EdgeRLo,Y:STA RowXRLo+1,X
+    LDA EdgeRHi,Y:STA RowXRHi+1,X
+    JMP next
+.lanes
+    SEC:SBC #1:STA left                 ; the left: t - 1
+    TXA:ASL A:BPL plain                 ; (bit 6 into N, bit 7 into C)
+    LDX #4:BCS tables                   ; (bits 6 and 7: the right edge)
+    LDA left:ADC #3:TAX                 ; (a tunnel: 3 on; C clear)
+    BNE tables                          ; always
+.plain
+    LDA left:ADC #2:TAX                 ; (2 on, 3 with bit 7: C)
+.tables
+    LDA TabLoLo,X:STA lo
+    LDA TabLoHi,X:STA lo+1
+    LDA TabHiLo,X:STA hi
+    LDA TabHiHi,X:STA hi+1
+    LDX k
+    LDA (lo),Y:STA RowXRLo+1,X
+    LDA (hi),Y:STA RowXRHi+1,X
+    LDX left
+    LDA TabLoLo,X:STA lo
+    LDA TabLoHi,X:STA lo+1
+    LDA TabHiLo,X:STA hi
+    LDA TabHiHi,X:STA hi+1
+    LDX k
+    LDA (lo),Y:STA RowXLLo+1,X
+    LDA (hi),Y:STA RowXLHi+1,X
+.next
+    INC k
+    LDA k:CMP #21:BEQ @+
+    JMP row                             ; (the loop's past a branch's reach)
+.@
+    LDA RowXLLo+1:STA CarAnchorL
+    LDA RowXLHi+1:STA CarAnchorL+1
+    LDA RowXRLo+1:STA CarAnchorR
+    LDA RowXRHi+1:STA CarAnchorR+1
+    RTS
+}
+
+\\ The lanes for the fork's lines (the CPC's &40E6): from the top entry down to the fork's line, two 2-lane
+\\ roads: the first's middle (L1 + R1) / 2 its end, a lane line halfway to L1; the second's middle (L2 + R2) /
+\\ 2 its start, a lane line halfway to R2, where R1 was (each sum's 16 bits halved with its sign, as the
+\\ CPC's). Then the normal lanes from the next entry down.
+\\
+\\ Inputs:
+\\     the edge tables (EdgeR2, and Lane3 as L2), RoadY, ForkRow
+\\
+\\ Outputs:
+\\     the lane tables; EdgeR, at the fork's lines
+\\     A, X, Y: corrupted
+
+.road_split
+{
+    ZA_AUTO1 last                       ; local: the last entry split
+    ZA_AUTO2 m                          ; local: a middle
+
+    LDY ForkRow
+    LDA #96:SEC:SBC RoadY,Y             ; the fork's line's entry: 96 - y
+    BVS none                            ; (y far above: the CPC's would run wild; none here)
+    BPL @+
+    LDA #0                              ; (below the bottom: all of them)
+.@
+    CMP #LaneEntries:BCC split
+.none
+    LDX #LaneEntries-1
+    JMP road_lanes
+.split
+    STA last
+    LDX SegCum+20                       ; from the road's last entry (nothing reads past it)
+    CPX #LaneEntries:BCC @+
+    LDX #LaneEntries
+.@
+    DEX
+    CPX last:BCS entry
+    LDX #LaneEntries-1                  ; (the fork's line past the road's end: as the CPC's, all)
+.entry
+    LDA EdgeLLo,X:CLC:ADC EdgeRLo,X:STA m   ; (L1 + R1) / 2: the first road's end
+    LDA EdgeLHi,X:ADC EdgeRHi,X
+    CMP #&80:ROR A:STA m+1:STA Lane2Hi,X
+    ROR m:LDA m:STA Lane2Lo,X
+    CLC:ADC EdgeLLo,X:TAY               ; (that + L1) / 2: its lane line
+    LDA m+1:ADC EdgeLHi,X
+    CMP #&80:ROR A:STA Lane1Hi,X
+    TYA:ROR A:STA Lane1Lo,X
+    LDA Lane3Lo,X:CLC:ADC EdgeR2Lo,X:STA m  ; (L2 + R2) / 2: the second's start
+    LDA Lane3Hi,X:ADC EdgeR2Hi,X
+    CMP #&80:ROR A:STA m+1:STA Lane3Hi,X
+    ROR m:LDA m:STA Lane3Lo,X
+    CLC:ADC EdgeR2Lo,X:TAY              ; (that + R2) / 2: its lane line, in EdgeR
+    LDA m+1:ADC EdgeR2Hi,X
+    CMP #&80:ROR A:STA EdgeRHi,X
+    TYA:ROR A:STA EdgeRLo,X
+    CPX last:BEQ @+
+    DEX:JMP entry
+.@
+    DEX:BMI done                        ; (no entries left)
+    JMP road_lanes
+.done
+    RTS
+}
+
+\\ The lanes (the CPC's &3FCF): half the width (less the last line's borrow), L + h at the middle, L + 3h/2
+\\ and its mirror, far to near, the borrows chained as the CPC's are (starting with none).
+\\
+\\ Inputs:
+\\     X: the first entry, far
+\\     the edge tables
+\\
+\\ Outputs:
+\\     the lane tables, entries X down to 0
+\\     A, X, Y: corrupted
+
+.road_lanes
+{
+    ZA_AUTO2 h                          ; local: half the road's width
+
+    SEC
+.lane
+    LDA EdgeRLo,X:SBC EdgeLLo,X:TAY     ; R - L - the borrow
+    LDA EdgeRHi,X:SBC EdgeLHi,X
+    CMP #&80:ROR A:STA h+1
+    TYA:ROR A:STA h                     ; h = that / 2, rounded down
+    CLC:ADC EdgeLLo,X:STA Lane2Lo,X     ; L + h
+    LDA h+1:ADC EdgeLHi,X:STA Lane2Hi,X
+    LDA h+1:CMP #&80:ROR A:TAY          ; (Y: q's high byte)
+    LDA h:ROR A                         ; q = h / 2, rounded down
+    CLC:ADC Lane2Lo,X:STA Lane3Lo,X     ; L + h + q
+    TYA:ADC Lane2Hi,X:STA Lane3Hi,X     ; (C: its carry)
+    BCS @+
+    SEC                                 ; less h and that carry
+    BCS sub                             ; always
+.@
+    CLC
+.sub
+    LDA Lane3Lo,X:SBC h:STA Lane1Lo,X
+    LDA Lane3Hi,X:SBC h+1:STA Lane1Hi,X     ; (C: no borrow, for the next line)
+    DEX:BPL lane
+    RTS
+}

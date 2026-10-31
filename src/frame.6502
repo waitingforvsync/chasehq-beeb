@@ -1,0 +1,96 @@
+\\ frame.6502 - the IRQ's 50 Hz frame, in the border (irq.6502's third interrupt falls into it): the keys,
+\\ the sirens' palette and the sound. Port A and the addressable latch are the IRQ's alone.
+
+ZA_AUTO1 keys                           ; out: keys down at any frame since read_keys took them
+ZA_AUTO1 sirenpal                       ; in: the sirens' palette to write, 8 normal or 16 swapped (0 none)
+ZA_AUTO1 speaking                       ; in: not 0 while a phrase plays: port A's the speech's, the frame quiet
+
+\\ The game's keys, internal numbers, key n to bit n: the CPC's defaults (O4): K left, L right, A accelerate,
+\\ Z brake, SPACE turbo, N gear, ESCAPE quit, P pause
+
+GameKeys = {&46, &56, &41, &61, &62, &55, &70, &37}
+ASSERT LEN(GameKeys) == 8, "a key a bit"
+KeyLeft = 1
+KeyRight = 2
+KeyAccel = 4
+KeyBrake = 8
+KeyTurbo = 16
+KeyGear = 32
+KeyQuit = 64
+KeyPause = 128
+
+\\ The keys read, each down one ORed into keys; the sirens' palette written if one's asked for (the panel's
+\\ lights are drawn in logical colours 8-15: tools/gendata.py).
+\\
+\\ Inputs:
+\\     &FC: A, as the MOS saved it
+\\     keys: those gathered since read_keys took them
+\\     sirenpal: 0, or the siren palette's end in SirenPal
+\\
+\\ Outputs:
+\\     keys: and those down now added (GameKeys' bits)
+\\     sirenpal: 0
+\\     A, X, Y: preserved
+
+.irq_frame
+{
+    ZA_AUTO1 irqx, irqy                 ; local: X and Y, kept
+
+    ASSERT irq_frame == irq.fallsinto, "irqend falls into irq_frame"
+    BIT speaking:BPL @+                 ; (a phrase playing: nothing more, port A's its)
+    LDA &FC
+    RTI
+.@
+    STX irqx:STY irqy
+
+    \\ each key's bit rolls into A, clear if it's down, the first read ending in the top bit (eight ROLs
+    \\ replace all of A); then flipped
+
+    LDX #LEN(GameKeys)-1
+.key
+    LDY GameKeyTable,X:STY &FE4F        ; system VIA: ORA without handshake, the key's number
+    CPY &FE4F                           ; C clear if down: bits 0-6 read back as Y, bit 7 the key
+    ROL A
+    DEX:BPL key
+    EOR #&FF
+    ORA keys:STA keys
+
+    LDX sirenpal:BEQ @+
+    LDY #8
+.siren
+    LDA SirenPal-1,X:STA &FE21          ; video ULA: palette
+    DEX
+    DEY:BNE siren
+    STY sirenpal
+.@
+
+    JSR sound_frame
+
+    LDY irqy:LDX irqx
+    LDA &FC
+    RTI
+}
+
+.GameKeyTable                           ; key n to bit n: the first read ends in the top bit
+    EQUB GameKeys
+
+\\ Take the keys gathered since the last call.
+\\
+\\ Inputs:
+\\     keys: the IRQ's
+\\
+\\ Outputs:
+\\     A: the keys down at any frame since the last call (GameKeys' bits), Z from it
+\\     keys: emptied
+\\     X: 0
+\\     Y: preserved
+
+.read_keys
+{
+    LDX #0
+    SEI                                 ; (an IRQ between the two would lose its keys)
+    LDA keys
+    STX keys
+    CLI
+    RTS
+}
