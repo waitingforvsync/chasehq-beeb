@@ -51,6 +51,7 @@ ASSERT LO(MaskTab) >= &80 AND HI(MaskTab) == HI(OrTab + 15), "MaskTab-&80,X and 
 \\     back: the playfield
 \\
 \\ Outputs:
+\\     SkyTop: no lower than its top line
 \\     A, X, Y: corrupted
 
 .sprite_draw
@@ -124,6 +125,10 @@ ASSERT LO(MaskTab) >= &80 AND HI(MaskTab) == HI(OrTab + 15), "MaskTab-&80,X and 
     SEC:ADC corner:STA scr
     LDA corner+1:ADC #&FF:STA scr+1     ; (the borrow)
     LDX lines:DEX:STX left
+    LDA bottom:SBC left                 ; (C set: corner+1 is &40 or more) its top line, 0-127
+    CMP SkyTop:BCS @+                   ; (the sky above it still clean)
+    STA SkyTop
+.@
     LDA skip                            ; the bottom row's index, top first: h - 1 - skip MOD h
 .mod
     CMP h:BCC @+

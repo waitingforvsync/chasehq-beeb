@@ -25,6 +25,12 @@ ASSERT LO(Col8) == 0 AND LO(E6Of) == 0 AND LO(R6Of) == 0, "the cell tables on pa
 SECTION GameVars
 .RunnerSpare                            ; the runner's spare store: an RTS patched there, or the STA put
     SKIP 8                              ; back, is harmless
+.SkyTop                                 ; the back playfield's lines above this are sky already: lowered to
+    SKIP 1                              ; the top of anything drawn over them
+.SkyOther                               ; the other playfield's
+    SKIP 1
+.SkyBuf                                 ; the playfield SkyTop is for
+    SKIP 1
 ENDSECTION
 
 \\ the backdrop's runner: for each of its 22 columns g, a load from the column the scroll puts there (patched
@@ -153,14 +159,17 @@ LineTables = 6                          ; (Y: the left edge's table, X: the righ
 LineEntry = 69                          ; the line (after its rarer edges' paths)
 
 \\ Draw the playfield into the back buffer: the road's lines segment by segment from the bottom up (a crest
-\\ hides segments: their entries skipped), then the backdrop's rows the horizon leaves showing, then sky.
+\\ hides segments: their entries skipped), then the backdrop's rows the horizon leaves showing, then sky, as
+\\ far up as this playfield doesn't have it already (SkyTop).
 \\
 \\ Inputs:
 \\     back: the playfield
 \\     the road's tables (road_frame), RoadSeg, RoadH, RoadScroll
+\\     SkyTop, SkyOther, SkyBuf
 \\
 \\ Outputs:
 \\     the playfield
+\\     SkyTop: the lines of sky now (0-128), for the sprites to lower; SkyOther, SkyBuf
 \\     A, X, Y: corrupted
 
 .road_draw
@@ -189,7 +198,14 @@ LineEntry = 69                          ; the line (after its rarer edges' paths
     ZA_AUTO2 tx, tx1                    ; local: its X, near then stepped; its far X
     ZA_AUTO1 tstep, tacc                ; local: |its X difference|, Bresenham's sum
     ZA_AUTO2 tlo, thi                   ; local: a table's low and high bytes
+    ZA_AUTO1 skyclean, skyn             ; local: lines above that sky already; sky lines left to draw
 
+    LDA back:CMP SkyBuf:BEQ @+          ; this playfield's sky mark
+    STA SkyBuf
+    LDA SkyTop:LDX SkyOther:STA SkyOther:STX SkyTop
+.@
+    LDA SkyTop:STA skyclean
+    LDA #0:STA SkyTop                   ; (no sky yet)
     LDA #127:STA line
     LDA #0:STA entry:STA j:STA level:STA levelr:STA set
     LDA #3:STA count
@@ -609,13 +625,16 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     INC r
     DEC rows:BNE backline
     LDA line:BMI done
-    AND #7:CMP #7:BEQ skyline           ; (the sky starts on a row of its own)
+    AND #7:CMP #7:BEQ sky               ; (the sky starts on a row of its own)
     LDA line:JSR runner_row             ; (or part way up the backdrop's last)
 
-    \\ the sky, to the top
+    \\ the sky: lines 0 to line, those from skyclean up already sky in this playfield
 
 .sky
     LDA line:BMI done
+    CLC:ADC #1:STA SkyTop               ; (lines 0 to line)
+    SEC:SBC skyclean:BEQ done:BCC done  ; the lines to draw
+    STA skyn
 .skyline
     LDA line:AND #7:TAX
     CPX #7:BNE @+
@@ -624,7 +643,8 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     LDA #SkyByte
     JSR Runner
     ZA_CANCALL Runner
-    DEC line:BPL skyline
+    DEC line
+    DEC skyn:BNE skyline
 .done
     RTS
 

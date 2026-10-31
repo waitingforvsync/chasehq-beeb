@@ -529,3 +529,63 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   the sprite edge fix, DIST every loop and the text review.
 - Measured for decisions O5: stage 1's own data here is about 10K (7.4K in the data bank, 2.5K in the code
   bank), and the player's car's mirrored copies are 3,689 bytes, which mirroring as it's drawn would give back.
+
+### The wait for the flip moved, and the sky skip (decisions D12, D13) - 2026-10-31
+- **Measured first** (jsbeeb B-DFS1.2, real IRQ, 300 loops of the CPC demo's steering): `show` waited 9,390
+  cycles a loop on average (4.6% of the loop) for the old playfield to be free, in 199 of 300 loops, up to
+  25,024. The wait ended at the playfield's end, so the loops locked to it: median exactly 5.00 frames.
+- **The wait now comes just before `road_draw`** (portalc's way): `show` only sets `reqshow`, and the next
+  loop's logic (`road_frame` and the rest, about 50K cycles, more than a frame) runs meanwhile. The IRQ flips
+  `back` itself: at the playfield's end if a request is waiting (`reqshow`'s bit 7 then set), else at the
+  panel's top when it takes one. `wait_back` waits for `reqshow` to be 0 or negative; `irqphase` is gone.
+- **The sky skip:** `SkyTop` is how many top lines of the back playfield are sky already; `SkyOther` the other
+  playfield's, swapped in by `road_draw` when `back` changes (`SkyBuf`), so the py65 harnesses that flip
+  `back` themselves work unchanged. `road_draw` draws sky only from the first sky line down to `SkyTop`, then
+  sets it to the sky's lines. `sprite_draw` lowers it to a sprite's top (bottom + 1 - lines), as do the
+  damage meter (line 28) and the turbo icons (109); `page_draw` sets it to 0 while a page is on. Both
+  marks are 0 at each stage's start.
+- Measured before (from py65, 400 loops, the same buffer two loops apart): the sky is 20 lines and 7,900
+  cycles a loop, its lines 99.7% unchanged and 90% untouched by sprites. Road lines: 3% unchanged; 60%
+  differ in 49-64 of their 64 bytes (the stripes' colours flip), 36% in 1-16. So a delta renderer for the
+  road would save at most about 9K before its bookkeeping and the sprites' dirt: not worth it.
+- **Exact:** against release 4 (HEAD, rebuilt), the reviewer's `bench.py`: the panel, both playfields, `Rng`
+  and the text's state identical every loop in the window (360), the 7 pages, the arrest (700), a 600-loop
+  drive and a 400-loop time up.
+- **Cycles:**
+  - py65 (400 loops): `road_draw` 93,790 -> 86,860 mean; the sprites +474 (the top's compare); the loop
+    188,982 -> 182,508.
+  - jsbeeb, both together: **204,644 -> 188,941 cycles a loop mean (5.12 -> 4.73 frames, 9.8 -> 10.6
+    loops a second)**; median 199,680 -> 181,804. `wait_back` took 6 cycles in all 300 loops: it never waits.
+- **Bytes:**
+  - Code bank: 598 -> 536 free. RoadT's page moved up one: the pad before it is now 221 and the end 315.
+  - Main RAM: the end 217 -> 202; the &259 gap 279 -> 251 (the sprite stubs moved there from the IRQ's
+    block, which the handlers outgrew; the block now has 19 free); GameVars +3.
+  - Data bank: 6 fewer.
+- Moved for the page checks: `msg_blank` after `msg_static` (its byte loop had crossed &9F00).
+- Where a loop goes now (py65 mean 182.5K): `road_draw` 86.9K (its line code 31.7K, the runner's fills
+  31.0K, the backdrop 8.7K), `road_frame` 40.5K (the lane tables 13.2K, `edge_table` about 12K,
+  `road_xsteps` 6K), the objects 30.9K, the car 12.8K, the rest about 11K. jsbeeb's IRQ adds about 6.4K.
+
+### The frame-rate review (agent, `work/review-frame/`) - 2026-10-31
+- No bugs in the sky skip or the IRQ's buffer swap. It noted:
+  - The meter lowers SkyTop to 28 every loop (harmless now).
+  - `page_draw` zeroes SkyTop before a page's first entry shows.
+  - The runner's `INPAGE 196` would silently pad up to 195 bytes if road.6502 grew past its 21 bytes of
+    headroom.
+- Merged, the four that are faster and smaller:
+  - 02 `road_xsteps` (a dead sum gone, the multiply through X and Y, the negation's carry patched once).
+  - 03 `road_lines`' squares through X and Y.
+  - 04 `road_split`'s halvings through Y, `road_lanes`' rare carry out of line.
+  - 05 the sprites' top line where C is known set: 13 cycles a sprite, not 19.
+- Merged: bench.py IDENTICAL in all five runs (window, pages, arrest 700, drive 600, time up 400);
+  check_road.py 0 of 600 differ on both branches. jsbeeb, 300 loops: **188,941 -> 187,324 cycles a loop
+  (4.73 -> 4.69 frames)**. Code bank 536 -> 566 free (all 30 in the pad before RoadT, which now starts 5
+  bytes past &A800); data bank 4 more free.
+- Held for Rich (decisions P10):
+  - 01, 06 and 07, which together are the biggest gain: 01 `edge_table`'s steep segments by patched
+    constants (+36), 06 the fork's lines (+22, the worst loops), 07 two tables made by the loader into
+    CodeVars (-28 in the bank, +28 of CodeVars' 168).
+  - 08, a backdrop skip: 932-1,055 a loop for +125 bytes, its worst loop slower.
+- The reviewer's figures for all seven: jsbeeb 1,000 loops 175,838 -> 170,746 mean, 99th percentile
+  240,209 -> 224,511.
+- Release 5.

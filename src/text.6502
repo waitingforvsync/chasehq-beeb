@@ -252,20 +252,6 @@ ENDMACRO
     RTS
 }
 
-\\ The face box blanked (the CPC's &1EE2).
-
-.msg_blank
-{
-    LDA #0
-    LDY #63
-.byte
-    FOR r = 0..MsgFaceRows - 1
-        STA MsgFaceAt + r * RowBytes,Y
-    NEXT
-    DEY:BPL byte
-    RTS
-}
-
 \\ The line cleared and static in the face box for 4 loops (the CPC's &1EB9): two random numbers for each of
 \\ its 320 bytes, the first's bits 2-3 its pixels (the second was the CPC's other buffer's), so the generator
 \\ steps as the CPC's. The steps are random's, inline: s0 - &8D and s1 + 3 only enter as their sum, which
@@ -318,6 +304,20 @@ ENDMACRO
     LDA Rng:EOR #&80:STA Rng
     LDA Rng+1:EOR #&80:STA Rng+1
     LDA s2:STA Rng+2
+    RTS
+}
+
+\\ The face box blanked (the CPC's &1EE2).
+
+.msg_blank
+{
+    LDA #0
+    LDY #63
+.byte
+    FOR r = 0..MsgFaceRows - 1
+        STA MsgFaceAt + r * RowBytes,Y
+    NEXT
+    DEY:BPL byte
     RTS
 }
 
@@ -375,7 +375,7 @@ ENDMACRO
 \\     back: the playfield drawn; the page
 \\
 \\ Outputs:
-\\     the playfield; PageLoop, PageOn
+\\     the playfield; PageLoop, PageOn; SkyTop 0 while it's on (its boxes are near the top)
 \\     A, X, Y: corrupted
 
 .page_draw
@@ -390,6 +390,7 @@ ENDMACRO
 .@
     INC PageLoop
     LDY #0:STY mid:STY dn
+    STY SkyTop                          ; (the sky redrawn whole after it)
     LDA PageAt:STA at
     LDA PageAt+1:STA at+1
     LDA (at),Y:CMP PageLoop:BNE first

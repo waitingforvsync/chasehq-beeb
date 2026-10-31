@@ -40,7 +40,6 @@ SECTION Chase2, org = LoadFloor, load = &FFFF0000+LoadFloor, exec = &FFFF0000+en
     SECTION MainCode, org = MainCodeOrg, guard = GameVarsOrg, transform = "zx02"
         INCLUDE "irq.6502"
         INCLUDE "frame.6502"            ; (irq.6502's last handler falls into it)
-        INCLUDE "plotting.6502"         ; the data's bank paged in for the sprites
         INCLUDE "../build/gen/siren.6502"   ; the sirens' palettes (tools/gendata.py)
 
         PADTO &204
@@ -50,6 +49,7 @@ SECTION Chase2, org = LoadFloor, load = &FFFF0000+LoadFloor, exec = &FFFF0000+en
         SKIPTO &258                     ; (MainVars, memory.6502)
         EQUB 2                          ; clear memory on BREAK
         INCLUDE "../build/gen/text.6502"    ; the text's font, faces, scripts and pages (tools/gentext.py)
+        INCLUDE "plotting.6502"         ; the data's bank paged in for the sprites
 
         PADTO NmiOrg
         RTI                             ; stray NMIs

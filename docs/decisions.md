@@ -67,6 +67,29 @@ Rich: "store the sprites in any format which lend themselves to quick plotting o
 interleaving them because of the 8 byte step, do that. Feel free to spend more on unrolling in the sprite
 routines (hot loop)"
 
+### D12. The sky drawn only where it isn't already (2026-10-31)
+Rich: "yeah add the sky skip".
+- Each playfield keeps how many top lines hold sky already (`SkyTop`). The sprites, the damage meter, the
+  turbo icons and the pages lower it to the top of what they draw, and `road_draw` draws sky only below it.
+
+### D13. The rupture's IRQ swaps the buffers; the loop waits only before it draws (2026-10-31)
+Rich: "is it using the spritescale method of swapping buffers and base address in the irq routine itself (my
+preferred method)?", then "maybe portalc does it like that", and "portalc does busy wait but not until it's
+exhausted the next frame's work that it can do without touching the screen ... i.e. the cell capture". And:
+"ideally the vertical rupture irq doesn't use vsync at all, other than to establish the timing at the
+beginning. It should split at three points: top of the status (to reprogram the CRTC), top of the playfield
+(to reprogram it again), and then bottom-ish of the playfield (the point at which it's safe to start
+rendering again to the currently displayed buffer). I like an irq handler which selects its states in the
+state machine by self-modifying the branch, as per exhale."
+- The IRQ already worked that way (T1 only after one vsync sync; three handlers chosen by a patched `BVS`).
+  Now it also flips `back`: at the playfield's end if a request is waiting, or at the panel's top if the
+  request came after that. `show` only makes the request; `wait_back` comes just before `road_draw`, after
+  the next loop's logic.
+
+### D14. Beat the CPC's frame rate (2026-10-31)
+Rich: "i would love to find a way of improving on the CPC frame rate somehow", "not that the CPC frame rate
+isn't totally acceptable, but i feel like the bbc micro can do it better".
+
 ---
 
 ## Proposed
@@ -134,6 +157,24 @@ that gap, go in the code bank instead. Left: the code bank about 570 bytes, main
 GameVars, the gap 288, the data bank about 300. The dissolve's masks (316 bytes) and the rest of the game's
 flow will need room: the title and the stage intro may want an overlay or a bank of their own.
 
+
+### P10. The rest of the frame-rate review: 01, 06 and 07 together; not the backdrop skip (2026-10-31, Claude)
+The review (`work/review-frame/`, its patches exact by bench.py and check_road.py) found seven changes. The
+four that are faster and smaller are merged. The other three are worth taking together:
+- 01 `edge_table` (steep segments by patched constants, the sum in Y): road_frame 2,396 a loop mean, 3,944
+  worst, +36 code-bank bytes.
+- 06 the fork's lines (fork_e inlined, the span ends kept in the JSR operands): road_draw 1,200 mean, 7,293
+  worst (the fork's loops are the slowest: 220K against 174K), +22.
+- 07 Times22 and edge_target's tables made by the loader into CodeVars: -28 in the code bank, +28 of
+  CodeVars (140 of 168 left), about 40 in the loader. With all seven, the text, turbo, popup and gen.6502
+  code keep the addresses they had before the review, so no page checks move.
+- Separately: with the four merged, the code before RoadT ends 5 bytes past &A800 (the pad is 251). Five
+  bytes saved there would move RoadT down a page and put 256 at the bank's end instead.
+- Together with the four merged: jsbeeb, 1,000 loops, 175,838 -> 170,746 cycles a loop mean, 99th percentile
+  240,209 -> 224,511; code bank and main RAM as before, CodeVars 28 fewer.
+- Not 08, the backdrop skip: 932-1,055 a loop for +125 bytes, its worst loop 331 slower, and after the
+  sighting the damage meter would stop most of it.
+
 ---
 
 ## Open
@@ -146,7 +187,8 @@ the main loop and accept the IRQ's jitter, or play from User VIA T1.
 D7 fixes each pen's pair. Real frames rendered with it may still show pens worth changing by hand.
 
 ### O3. The frame-rate target
-Set once the harness has measured the CPC's.
+Set once the harness has measured the CPC's. Rich's aim is to beat it (D14); the CPC's own figure is still an
+estimate (about 6 frames a loop, its wait states guessed at 1.2).
 
 ### O5. Room for the rest of the game
 Now (after the continue, the popup and the text review): the code bank has about 600 bytes (571 at its end, 27

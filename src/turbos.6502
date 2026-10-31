@@ -10,7 +10,7 @@
 \\     CarTurbos, CarTurbo
 \\
 \\ Outputs:
-\\     the playfield; TurboBlink
+\\     the playfield; TurboBlink; SkyTop no lower than the icons' top
 \\     A, X, Y: corrupted
 
 TurboTop = TurboLine - 15               ; the icon's top line
@@ -31,6 +31,9 @@ FUNCTION TurboOr(b) = RightPixel(b AND 7) << (b >= &88) ; and its opaque pixel's
     RTS
 .@
     STX n
+    LDA #TurboTop:CMP SkyTop:BCS @+     ; (the sky above them still clean)
+    STA SkyTop
+.@
     LDA #TurboCol*8:STA at
 .icon
     LDA back:CLC:ADC #(TurboTop DIV 8)*2:STA at+1 ; (512 bytes a row)

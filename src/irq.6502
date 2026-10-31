@@ -1,13 +1,14 @@
 \\ irq.6502 - the vertical rupture (exhale's): System VIA T1 at the panel's top, the playfield's top and its
 \\ end, two CRTC cycles a frame; the last goes on to the keys (frame.6502). In main RAM.
 
-\\ Shared with the main loop (show): it sets reqshow to the playfield it's drawn; the panel's top takes it.
-\\ The old one is free once its last line has gone (irqphase) or the new one's been taken. R6 = 16 and R7 = 23
+\\ Shared with the main loop: show sets reqshow to the playfield it's drawn, and the panel's top takes it. The
+\\ IRQ flips back to the old one once that's free: at the playfield's end if the request was waiting then (the
+\\ old one's last line gone; reqshow's bit 7 set), else when the panel's top takes it. R6 = 16 and R7 = 23
 \\ serve both cycles (the panel's 8 rows reach neither), so only R4 and R12 change; each handler leaves &FE00
 \\ on the register the next writes first.
 
-ZA_AUTO1 reqshow                        ; in: 0, or the playfield to show next, HI(addr DIV 8)
-ZA_AUTO1 irqphase                       ; out: 0 from the panel's top, &80 from the playfield's end
+ZA_AUTO1 reqshow                        ; in: 0, or the playfield to show next, HI(addr DIV 8); bit 7 once
+                                        ; back's flipped
 ZA_AUTO1 irqframes                      ; out: frames, counted at the playfield's end
 
 \\ T1's periods: the panel's top to the playfield's, its top to its end, its end to the next panel's top
@@ -21,10 +22,11 @@ ASSERT LO(PanelPeriod) == &FE AND LO(ShownPeriod) == &FE AND LO(BorderPeriod) ==
 \\
 \\ Inputs:
 \\     reqshow: a playfield to show, if one is waiting
+\\     back: the playfield drawn
 \\
 \\ Outputs:
-\\     reqshow: 0 once the panel's top has taken it
-\\     irqphase: 0 at the panel's top, &80 at the playfield's end
+\\     reqshow: bit 7 set at the playfield's end if one's waiting; 0 once the panel's top has taken it
+\\     back: the other, once the old one's free
 \\     irqframes: one more at each playfield's end
 \\     A, X, Y: preserved
 
@@ -43,12 +45,15 @@ ASSERT LO(PanelPeriod) == &FE AND LO(ShownPeriod) == &FE AND LO(BorderPeriod) ==
 .irqpanel
     LDA #PanelRows-1:STA &FE01          ; CRTC: R4 (irqplay left it selected), the rows less one
     LDA #12:STA &FE00                   ; CRTC: R12 selected, for this and irqplay
-    LDA reqshow:BEQ @+                  ; a new playfield
-    STA showhi+1
-.@
+    LDA reqshow:BEQ showhi              ; a new playfield
+    BMI flipped
+    LDA back:EOR #&20:STA back          ; (asked for since the playfield's end: the old one's free now)
+    LDA reqshow
+.flipped
+    AND #&7F:STA showhi+1
+    LDA #0:STA reqshow
 .showhi
     LDA #HI(PlayAddrA DIV 8):STA &FE01  ; self-modified: the playfield shown (R13 is always 0)
-    LDA #0:STA reqshow:STA irqphase
     LDA #(irqplay-irqbranch):STA irqbranch-1
     LDA #HI(ShownPeriod):STA &FE47      ; system VIA: T1L-H, from the playfield's top to its end
     LDA &FC
@@ -68,7 +73,10 @@ ASSERT LO(PanelPeriod) == &FE AND LO(ShownPeriod) == &FE AND LO(BorderPeriod) ==
 \\ the playfield's end: its last line gone; then the keys
 
 .irqend
-    LDA #&80:STA irqphase
+    LDA reqshow:BEQ @+:BMI @+           ; a new playfield waiting: the old one's last line gone
+    ORA #&80:STA reqshow
+    LDA back:EOR #&20:STA back          ; (the old one free to draw into)
+.@
     INC irqframes
     LDA #(irqpanel-irqbranch):STA irqbranch-1
     LDA #HI(PanelPeriod):STA &FE47      ; system VIA: T1L-H, from the panel's top to the playfield's

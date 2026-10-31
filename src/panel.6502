@@ -297,7 +297,7 @@ Figures = 3                                 ; the BCD figures, in their shadows'
 \\     CrimSighted, CrimRams
 \\
 \\ Outputs:
-\\     the playfield; MeterHits, the column
+\\     the playfield; MeterHits, the column; SkyTop no lower than its top
 \\     A, X, Y: corrupted
 
 .draw_meter
@@ -308,6 +308,10 @@ Figures = 3                                 ; the BCD figures, in their shadows'
     LDA ArrestState:CMP #3:BCS done     ; (gone once the car's pulled in)
     LDA CrimRams:CMP MeterHits:BEQ @+
     JSR build_meter
+.@
+    LDA #MeterBottom + 1 - MeterLines   ; its top line
+    CMP SkyTop:BCS @+                   ; (the sky above it still clean)
+    STA SkyTop
 .@
     LDA back:CLC:ADC #(MeterBottom DIV 8)*2 ; (512 bytes a row)
     STA at+1:STA at2+1

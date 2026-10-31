@@ -92,7 +92,7 @@
 
     \\ the rupture's and the keys' state: playfield A shown, no request, no keys
 
-    LDA #0:STA reqshow:STA irqphase:STA irqframes:STA keys
+    LDA #0:STA reqshow:STA irqframes:STA keys
 
     \\ synced to vsync (hexwab's and tricky's): to within ~10 cycles, then exactly by waiting a cycle short
     \\ of a frame until the vsync's flag isn't set

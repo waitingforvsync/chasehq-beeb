@@ -757,8 +757,9 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
     ZA_AUTO1 base                       ; local: the row of the base table for the fraction (f * 22)
     ZA_AUTO1 c                          ; local: the summed gradient
     ZA_AUTO1 b, mag                     ; local: base, |c|
-    ZA_AUTO2 prod                       ; local: b |c|
+    ZA_AUTO1 plo                        ; local: b |c|'s low byte
     ZA_AUTO1 at                         ; local: the next segment's gradient in the window
+    ZA_AUTO1 k                          ; local: the boundary
 
     LDA RoadFrac:LSR A:LSR A:LSR A:LSR A:LSR A:TAX
     LDA Times22,X:STA base
@@ -786,31 +787,35 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
     CLC:ADC c:STA c
     TXA:CLC:ADC base:TAY
     LDA RoadBase,Y:STA b
+    STX k                               ; (X for the squares)
 
-    \\ b |c| by quarter squares, negated for c < 0, then bits 6-13: floor(b c / 64), mod 256
+    \\ b |c| by quarter squares (Y the sum's, X the difference's), negated for c < 0, then bits 6-13:
+    \\ floor(b c / 64), mod 256
 
     LDA c:BPL @+
     EOR #&FF:CLC:ADC #1
 .@
     STA mag
     CLC:ADC b:TAY                       ; b + |c|, at most 224
-    LDA SqLo,Y:STA prod
-    LDA SqHi,Y:STA prod+1
     LDA b:SEC:SBC mag:BCS @+
     EOR #&FF:ADC #1                     ; (C clear) |b - |c||
 .@
-    TAY
-    LDA prod:SEC:SBC SqLo,Y:STA prod    ; less its square: b |c|
-    LDA prod+1:SBC SqHi,Y:STA prod+1
-    BIT c:BPL @+
-    LDA prod:EOR #&FF:CLC:ADC #1:STA prod   ; (negated)
-    LDA prod+1:EOR #&FF:ADC #0:STA prod+1
-.@
-    LDA prod:ASL A:ROL prod+1:ASL A:ROL prod+1 ; bits 6-13
-    LDA prod+1:CLC:ADC b:STA RoadY,X
+    TAX
+    LDA SqLo,Y:SEC:SBC SqLo,X:STA plo   ; b |c|, its high byte in A
+    LDA SqHi,Y:SBC SqHi,X
+    BIT c:BMI negate
+.shift
+    ASL plo:ROL A:ASL plo:ROL A         ; bits 6-13
+    LDX k
+    CLC:ADC b:STA RoadY,X
     INX:CPX #22:BNE boundary
     LDA #&A0:STA RoadY+22               ; -96: past the last
     RTS
+.negate
+    TAY                                 ; (negated)
+    LDA plo:EOR #&FF:CLC:ADC #1:STA plo
+    TYA:EOR #&FF:ADC #0
+    JMP shift
 }
 
 .Times22
@@ -838,20 +843,24 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
     ZA_AUTO1 at                         ; local: the next segment's curve in the window
     ZA_AUTO2 x                          ; local: the edge's X
     ZA_AUTO2 diff                       ; local: T - x
-    ZA_AUTO2 p                          ; local: the product, mod 65536
+    ZA_AUTO1 plo                        ; local: the product's low byte
     ZA_AUTO1 mm                         ; local: m / 4
     ZA_AUTO1 n                          ; local: n, the left edge's narrowing
     ZA_AUTO1 hiprod                     ; local: diff's high byte by mm, mod 256
-    ZA_AUTO2 xl                         ; local: the left edge's X
+    ZA_AUTO1 seg                        ; local: the segment
     ZA_AUTO1 c0                         ; local: the curve under the car
 
+    LDA neg:STA negop+1                 ; the curves' sign patched in, and the carry for its EOR's + 1
+    LSR A:LDA #&18                      ; CLC
+    BCC @+
+    LDA #&38                            ; SEC
+.@
+    STA negc
     LDA RoadFrac:LSR A:LSR A:LSR A:LSR A:LSR A:TAX
     LDA Times22,X:STA base
     LDA RoadSeg:STA at
     LDA xs:STA x
     LDA xs+1:STA x+1
-    LDA xs:SEC:SBC #LO(LeftOffset):STA xl
-    LDA xs+1:SBC #HI(LeftOffset):STA xl+1
 
     \\ the starting heading: 128 - round(7 c0 / 8), even, c0 the window's (not RoadC0, a fork's negation)
 
@@ -866,9 +875,13 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
 
     LDX #0
 .segment
+    STX seg
     LDY at:INC at
-    LDA neg:LSR A                       ; (C: 1 negating, for the EOR's + 1)
-    LDA RoadWindow,Y:EOR neg
+.negc
+    CLC                                 ; self-modified: SEC to negate
+    LDA RoadWindow,Y
+.negop
+    EOR #0                              ; self-modified: neg
     ADC theta:STA theta
     TAY
     LDA RoadT,Y:SEC:SBC x:STA diff
@@ -878,57 +891,53 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
     LDA RoadN,Y:STA n
     LDA RoadM,Y:LSR A:LSR A:STA mm
 
-    \\ p = diff * mm, mod 65536, by quarter squares: diff's low byte by mm, plus its high byte's (mod 256)
-    \\ times 256
+    \\ p = diff * mm, mod 65536, by quarter squares (X the difference's, Y the sum's): diff's low byte by mm,
+    \\ plus its high byte's (mod 256) times 256
 
-    LDA diff:CLC:ADC mm:TAY             ; (C: past 255)
-    BCS lowsum
-    LDA SqLo,Y:STA p
-    LDA SqHi,Y:STA p+1
-    JMP lowdiff
-.lowsum
-    LDA SqLo+256,Y:STA p
-    LDA SqHi+256,Y:STA p+1
-.lowdiff
+    LDA diff+1:SEC:SBC mm:BCS @+
+    EOR #&FF:ADC #1                     ; (C clear)
+.@
+    TAX
+    LDA diff+1:CLC:ADC mm:TAY           ; (C: past 255)
+    BCC hlow
+    LDA SqLo+256,Y:SEC:SBC SqLo,X:STA hiprod
+    JMP lowpart
+.hlow
+    LDA SqLo,Y:SEC:SBC SqLo,X:STA hiprod
+.lowpart
     LDA diff:SEC:SBC mm:BCS @+
     EOR #&FF:ADC #1                     ; (C clear)
 .@
-    TAY
-    LDA p:SEC:SBC SqLo,Y:STA p
-    LDA p+1:SBC SqHi,Y:STA p+1
-    LDA diff+1:CLC:ADC mm:TAY
-    BCS highsum
-    LDA SqLo,Y
-    JMP highdiff
-.highsum
-    LDA SqLo+256,Y
-.highdiff
-    STA hiprod
-    LDA diff+1:SEC:SBC mm:BCS @+
-    EOR #&FF:ADC #1
-.@
-    TAY
-    LDA hiprod:SEC:SBC SqLo,Y
-    CLC:ADC p+1:STA p+1
+    TAX
+    LDA diff:CLC:ADC mm:TAY             ; (C: past 255)
+    BCS lhigh
+    LDA SqLo,Y:SEC:SBC SqLo,X:STA plo
+    LDA SqHi,Y:SBC SqHi,X
+    JMP summed
+.lhigh
+    LDA SqLo+256,Y:SEC:SBC SqLo,X:STA plo
+    LDA SqHi+256,Y:SBC SqHi,X
+.summed
+    CLC:ADC hiprod                      ; p's high byte
 
-    \\ d = p / 256, rounded; x on by it; the left's d + n
+    \\ d = p / 256, rounded; the left's d + n; x on by d
 
-    LDA p:ASL A                         ; (bit 7 into C)
-    LDA p+1:ADC #0:STA RoadD,X
+    ASL plo                             ; (bit 7 into C)
+    ADC #0
+    LDX seg
+    STA RoadD,X
+    TAY
     CLC:ADC n:STA RoadDL,X
-    BPL @+
-    DEC xl+1
-.@
-    CLC:ADC xl:STA xl
-    BCC @+
-    INC xl+1
-.@
-    LDA RoadD,X
+    TYA:BMI dminus
     CLC:ADC x:STA x
-    LDA RoadD,X:AND #&80:BEQ @+
-    LDA #&FF
-.@
-    ADC x+1:STA x+1
+    BCC stepped
+    INC x+1
+    BCS stepped                         ; always
+.dminus
+    CLC:ADC x:STA x
+    BCS stepped
+    DEC x+1
+.stepped
     INX:CPX #22:BEQ @+
     JMP segment                         ; (the loop's past a branch's reach: inverted round a JMP)
 .@
@@ -1356,8 +1365,7 @@ EdgeTabHi = {EdgeRHi, EdgeLHi, EdgeR2Hi, Lane3Hi}
 
 .road_split
 {
-    ZA_AUTO1 last                       ; local: the last entry split
-    ZA_AUTO2 m                          ; local: a middle
+    ZA_AUTO1 last                       ; local: the last entry split, less 1
 
     LDY ForkRow
     LDA #96:SEC:SBC RoadY,Y             ; the fork's line's entry: 96 - y
@@ -1376,29 +1384,29 @@ EdgeTabHi = {EdgeRHi, EdgeLHi, EdgeR2Hi, Lane3Hi}
     LDX #LaneEntries
 .@
     DEX
-    CPX last:BCS entry
+    CPX last:BCS @+
     LDX #LaneEntries-1                  ; (the fork's line past the road's end: as the CPC's, all)
-.entry
-    LDA EdgeLLo,X:CLC:ADC EdgeRLo,X:STA m   ; (L1 + R1) / 2: the first road's end
+.@
+    DEC last                            ; (the loop's end: the last entry, less 1)
+.entry                                  ; (Y: the low bytes' sums)
+    LDA EdgeLLo,X:CLC:ADC EdgeRLo,X:TAY ; (L1 + R1) / 2: the first road's end
     LDA EdgeLHi,X:ADC EdgeRHi,X
-    CMP #&80:ROR A:STA m+1:STA Lane2Hi,X
-    ROR m:LDA m:STA Lane2Lo,X
+    CMP #&80:ROR A:STA Lane2Hi,X
+    TYA:ROR A:STA Lane2Lo,X
     CLC:ADC EdgeLLo,X:TAY               ; (that + L1) / 2: its lane line
-    LDA m+1:ADC EdgeLHi,X
+    LDA Lane2Hi,X:ADC EdgeLHi,X
     CMP #&80:ROR A:STA Lane1Hi,X
     TYA:ROR A:STA Lane1Lo,X
-    LDA Lane3Lo,X:CLC:ADC EdgeR2Lo,X:STA m  ; (L2 + R2) / 2: the second's start
+    LDA Lane3Lo,X:CLC:ADC EdgeR2Lo,X:TAY    ; (L2 + R2) / 2: the second's start
     LDA Lane3Hi,X:ADC EdgeR2Hi,X
-    CMP #&80:ROR A:STA m+1:STA Lane3Hi,X
-    ROR m:LDA m:STA Lane3Lo,X
+    CMP #&80:ROR A:STA Lane3Hi,X
+    TYA:ROR A:STA Lane3Lo,X
     CLC:ADC EdgeR2Lo,X:TAY              ; (that + R2) / 2: its lane line, in EdgeR
-    LDA m+1:ADC EdgeR2Hi,X
+    LDA Lane3Hi,X:ADC EdgeR2Hi,X
     CMP #&80:ROR A:STA EdgeRHi,X
     TYA:ROR A:STA EdgeRLo,X
-    CPX last:BEQ @+
-    DEX:JMP entry
-.@
-    DEX:BMI done                        ; (no entries left)
+    DEX:CPX last:BNE entry              ; (last: the last entry split, less 1)
+    TXA:BMI done                        ; (no entries left)
     JMP road_lanes
 .done
     RTS
@@ -1431,14 +1439,14 @@ EdgeTabHi = {EdgeRHi, EdgeLHi, EdgeR2Hi, Lane3Hi}
     LDA h:ROR A                         ; q = h / 2, rounded down
     CLC:ADC Lane2Lo,X:STA Lane3Lo,X     ; L + h + q
     TYA:ADC Lane2Hi,X:STA Lane3Hi,X     ; (C: its carry)
-    BCS @+
+    BCS carried
     SEC                                 ; less h and that carry
-    BCS sub                             ; always
-.@
-    CLC
 .sub
     LDA Lane3Lo,X:SBC h:STA Lane1Lo,X
     LDA Lane3Hi,X:SBC h+1:STA Lane1Hi,X     ; (C: no borrow, for the next line)
     DEX:BPL lane
     RTS
+.carried
+    CLC
+    BCC sub                             ; always
 }

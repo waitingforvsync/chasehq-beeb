@@ -1,7 +1,7 @@
 \\ game.6502 - the main loop. For now stage 1, again and again: the road, the traffic, the criminal, the
 \\ clock and the score.
 
-ZA_AUTO1 back                           ; local to the loop: the back playfield's high byte, &40 or &60
+ZA_AUTO1 back                           ; the back playfield's high byte, &40 or &60 (the IRQ flips it)
 
 \\ The game: stage 1, for good; after a game over with the score cleared, after an arrest with it kept.
 \\
@@ -30,6 +30,7 @@ ENDSECTION
     JSR road_frame
     JSR road_draw
     JSR show
+    JSR wait_back                       ; (taken, or about to be)
 
     \\ the display on, once the first playfield's shown: &FE00 put back on the register the next handler
     \\ writes first (12 if it's irqplay, else 4)
@@ -77,6 +78,7 @@ ENDSECTION
     JSR road_frame
     JSR traffic_project
     JSR car_collide
+    JSR wait_back                       ; (the old playfield free: the IRQ's flipped back to it)
     JSR road_draw
     JSR car_offroad                     ; (after the road: its tapers in the tables, as the CPC's)
     JSR car_spark
@@ -119,6 +121,7 @@ ENDSECTION
 .stage_start
 {
     LDA #0:STA StageLoops
+    STA SkyTop:STA SkyOther             ; (neither playfield's sky known to be drawn)
     JSR road_start
     JSR car_start
     JSR traffic_start
@@ -131,27 +134,38 @@ ENDSECTION
     JMP panel_start
 }
 
-\\ Show the back playfield from the next panel on, and make the other the back once it's free: once its last
-\\ line has gone this frame (irqphase), or the panel's top has taken the new one.
+\\ Show the back playfield from the next panel on. The IRQ makes the other the back once it's free; the loop
+\\ goes on to its logic meanwhile, and waits for that (wait_back) only before it draws.
 \\
 \\ Inputs:
 \\     back: the playfield drawn
 \\
 \\ Outputs:
-\\     back: the other
+\\     reqshow
 \\     A: corrupted
 
 .show
 {
 .taken
-    LDA reqshow:BNE taken               ; the last request taken
+    LDA reqshow:BNE taken               ; the last request taken (it has been: a loop is frames long)
     LDA back:LSR A:LSR A:LSR A          ; its CRTC address's high byte
     STA reqshow
+    RTS
+}
+
+\\ Wait till the IRQ's made the old playfield the back: at the playfield's end (reqshow's bit 7) or the panel's
+\\ top (reqshow 0).
+\\
+\\ Outputs:
+\\     back: free to draw into
+\\     A: corrupted
+
+.wait_back
+{
 .wait
-    LDA reqshow:BEQ free                ; the panel's top has taken it
-    BIT irqphase:BPL wait               ; or the old one's last line has gone
+    LDA reqshow:BEQ free
+    BPL wait
 .free
-    LDA back:EOR #&20:STA back
     RTS
 }
 
