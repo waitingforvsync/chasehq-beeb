@@ -588,4 +588,5 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   - 08, a backdrop skip: 932-1,055 a loop for +125 bytes, its worst loop slower.
 - The reviewer's figures for all seven: jsbeeb 1,000 loops 175,838 -> 170,746 mean, 99th percentile
   240,209 -> 224,511.
-- Release 5.
+- Release 5 (site commit 231fbc9, from c38a86e). That commit's message says the data bank has 2 more bytes
+  free; it has 2 fewer (16,042 -> 16,044 bytes used since release 4).
