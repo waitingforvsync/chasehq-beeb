@@ -140,24 +140,30 @@ ASSERT MsgLineCell == 1 AND MsgColumns == 31, "msg_clear's cells: 1-31, and 31 o
 
 .msg_face
 {
-    ZA_AUTO2 from, at                   ; local: the face's row; the box's
-    ZA_AUTO1 r                          ; local: rows left
+    ZA_AUTO2 from, at, at2              ; local: the face's packed row; the box's row, and 32 bytes on
+    ZA_AUTO1 r, t                       ; local: rows left; a packed byte
 
     LDA FaceLo,X:STA from
     LDA FaceHi,X:STA from+1
     LDA #LO(MsgFaceAt):STA at
-    LDA #HI(MsgFaceAt):STA at+1
+    LDA #LO(MsgFaceAt + 32):STA at2
+    LDA #HI(MsgFaceAt):STA at+1:STA at2+1
+    ASSERT HI(MsgFaceAt) == HI(MsgFaceAt + 63), "a face's row in a page"
     LDA #MsgFaceRows:STA r
 .row
-    LDY #63
+    LDY #31
 .byte
-    LDA (from),Y:STA (at),Y
+    LDA (from),Y:STA t                  ; two codes (D22): byte Y, and byte Y + 32
+    AND #15:TAX
+    LDA FaceCodes,X:STA (at),Y
+    LDA t:LSR A:LSR A:LSR A:LSR A:TAX
+    LDA FaceCodes,X:STA (at2),Y
     DEY:BPL byte
-    LDA from:CLC:ADC #64:STA from
+    LDA from:CLC:ADC #32:STA from
     BCC @+
     INC from+1
 .@
-    LDA at+1:CLC:ADC #HI(RowBytes):STA at+1
+    LDA at+1:CLC:ADC #HI(RowBytes):STA at+1:STA at2+1
     DEC r:BNE row
     RTS
 }

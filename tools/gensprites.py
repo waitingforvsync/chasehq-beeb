@@ -168,9 +168,13 @@ def stage_sprites(stage, files, mem, inks):
         for i in range(10):
             desc, handler = (st.rw(table + 7 * i), st.rw(table + 7 * i + 2)) if i else (0, 0)
             kind = KINDS.get(handler, 0) if desc else 0
+            if kind == 4 and (side, i) != (1, 2):
+                # (stage 3's right id 8, never placed: from the right the CPC's beam would end at the next row's
+                # left edge, before it starts. Its pylon alone)
+                kind = 3
             kinds.append(kind)
             for size in range(1, 11):
-                parts = tuple(st.parts(kind, desc, size)) if kind in (1, 2, 3) else ()
+                parts = tuple(st.parts(3 if kind == 4 else kind, desc, size)) if kind in (1, 2, 3, 4) else ()
                 if parts not in seen:
                     seen[parts] = len(records)
                     records += list(parts) + [(0, 0, 1)]
@@ -203,7 +207,33 @@ def stage_sprites(stage, files, mem, inks):
                 n = st.sprite(p + 1, 'Heli')
                 assert n == heli + 2 * k + part, 'the helicopter\'s sprites one after another'
     assert len(sprites) <= 256
-    return sprites, kinds, lists, records, cars, heli
+    # the gantry's beam (left id 2, kind 4: the CPC's &2474), if the stage has one: by size, its pylon's x
+    # (at its first part's descriptor + 2 + 2(size - 1)), its height and a colour byte a line from the bottom
+    # (+ 22 + 3(size - 1)), each line's as its fill byte for the line's parity (the pens' D7 pairs by x + y
+    # parity): a list's line k from the bottom, line bottom - k on the screen, in GantryEven for an even bottom
+    # and GantryOdd for an odd one
+    beam = None
+    table = st.rw(0x5BD4)
+    desc, handler = st.rw(table + 7 * 2), st.rw(table + 7 * 2 + 2)
+    if KINDS.get(handler) == 4:
+        pd = st.rw(desc + 1)
+        heights, lists_ = [], {}
+        xoffs = [st.rd(pd + 2 + 2 * (s - 1)) for s in range(1, 11)]
+        assert all(x > 0 for x in xoffs), 'the beam\'s right end: 0 only with a carry (gantry_beam)'
+        for s in range(1, 11):
+            h, at = st.rd(pd + 22 + 3 * (s - 1)), st.rw(pd + 23 + 3 * (s - 1))
+            heights.append((h, at))
+            lists_[at] = max(lists_.get(at, 0), h)
+        beam_bytes, offsets = [], {}
+        for at, h in sorted(lists_.items()):
+            offsets[at] = len(beam_bytes)
+            for k in range(h):
+                lp, rp = mode0_pens(st.rd(at + k))
+                fill = [mode2_byte(pair_for(inks[lp])[(0 + y) & 1], pair_for(inks[rp])[(1 + y) & 1]) for y in (0, 1)]
+                beam_bytes.append((fill[k & 1], fill[(1 + k) & 1]))   # (the bottom even, odd)
+        assert all(h for h, _ in heights), 'a beam of 0 lines (the CPC would draw 256)'
+        beam = ([h for h, _ in heights], [offsets[at] for _, at in heights], xoffs, beam_bytes)
+    return sprites, kinds, lists, records, cars, heli, beam
 
 
 def main(out):
@@ -240,25 +270,34 @@ def main(out):
             f.write(f'.SprData{name}                                   ; {w} x {h}, a column at a time, top first\n')
             for i in range(0, len(data), 16):
                 f.write('    EQUB ' + ', '.join(f'&{v:02X}' for v in data[i:i + 16]) + '\n')
-        slot = 5 * most + 20 + 2 * 200 + 42 + 1 + room
+        beams = [per[s][6] for s in STAGES if per[s][6]]
+        beam_lines = max((len(b[3]) for b in beams), default=0)
+        assert 2 * beam_lines <= 256 and max((max(b[0]) for b in beams), default=0) <= 32, 'BeamBuf: 32 lines'
+
+        slot = 20 + 2 * 200 + 42 + 1 + 30 + 2 * beam_lines + room  # (the five sprite tables in main RAM, GameVars)
     with open(os.path.join(out, 'spriteslot.6502'), 'w') as f:
         f.write('\\\\ spriteslot.6502 - made by tools/gensprites.py: the stages\' slot at the data bank\'s end.\n')
-        f.write('\n\\\\ the stage\'s slot (spritestageN.6502\'s Stage<n>Data, filled whole): SprW, SprH, SprStep (a column\'s\n')
-        f.write('\\\\ bytes less 8, signed), SprLo and SprHi (its bytes less 8) by sprite; its roadside objects\' kinds by\n')
-        f.write('\\\\ side * 10 + id (0 none, 1 raised, 2 on the ground, 3 parts, 4 the gantry); their part lists by\n')
+        f.write('\n\\\\ the stage\'s sprite tables, in main RAM (decisions D22): SprW, SprH, SprStep (a column\'s bytes less\n')
+        f.write('\\\\ 8, signed), SprLo and SprHi (its bytes less 8) by sprite\n\n')
+        f.write('SECTION GameVars\n')
+        for lab in ('SprW', 'SprH', 'SprStep', 'SprLo', 'SprHi'):
+            f.write(f'.{lab}\n    SKIP {most}\n')
+        f.write('ENDSECTION\n')
+        f.write('\n\\\\ the stage\'s slot (spritestageN.6502\'s Stage<n>Data and Parts, filled whole): its roadside objects\' kinds by\n')
+        f.write('\\\\ side * 10 + id (0 none, 1 raised, 2 on the ground, 3 parts, &80 the gantry); their part lists by\n')
         f.write('\\\\ (side * 10 + id) * 10 + size - 1; its cars (the criminal first) then its obstacles, by size 0-5;\n')
         f.write('\\\\ its helicopter\'s first sprite (0 none; then its shadow, then both mirrored); then its parts and its\n')
         f.write('\\\\ own sprites\n\n')
         f.write(f'DataSlotBytes = {slot}\n')
         f.write(f'HeliData = DataVarsOrg - {heli_bytes}            ; the helicopter\'s sprites, the slot\'s last (heli.6502)\n')
         f.write('    PADTO DataVarsOrg - DataSlotBytes\n')
-        for lab, n in (('SprW', most), ('SprH', most), ('SprStep', most), ('SprLo', most), ('SprHi', most),
-                       ('ObjKind', 20), ('ObjPartLo', 200), ('ObjPartHi', 200), ('CarSprite', 42),
-                       ('HeliSprite', 1), ('DataSlotParts', room)):
+        for lab, n in (('ObjKind', 20), ('ObjPartLo', 200), ('ObjPartHi', 200), ('CarSprite', 42),
+                       ('HeliSprite', 1), ('GantryX', 10), ('GantryHeight', 10), ('GantryAt', 10),
+                       ('GantryEven', beam_lines), ('GantryOdd', beam_lines), ('DataSlotParts', room)):
             f.write(f'.{lab}\n    SKIP {n}\n')
 
     for s in STAGES:
-        sprites, kinds, lists, records, carsp, heli = per[s]
+        sprites, kinds, lists, records, carsp, heli, beam = per[s]
         n = len(sprites)
         pad = lambda vals, fill=0: vals + [fill] * (most - len(vals))
         steps = [len(x[3]) // x[1] - 8 & 255 for x in sprites]   # a column's bytes less 8, signed
@@ -280,8 +319,10 @@ def main(out):
                         for i, x in enumerate(sprites)] + ['0'] * (most - n)
                 for i in range(0, len(vals), 8):
                     f.write('    EQUB ' + ', '.join(vals[i:i + 8]) + '\n')
-            f.write('    ASSERT P% == ObjKind\n')
-            f.write('    EQUB ' + ', '.join(str(k) for k in kinds) + '\n')
+            f.write('    ASSERT P% == SprHi + SprTableSize\n')
+            f.write('ENDSECTION\n')
+            f.write(f'SECTION Stage{s}Data2, org = ObjKind\n')
+            f.write('    EQUB ' + ', '.join(str(k if k != 4 else 0x80) for k in kinds) + '\n')   # (the gantry's bit 7)
             for lab, fn in (('ObjPartLo', 'LO'), ('ObjPartHi', 'HI')):
                 f.write(f'    ASSERT P% == {lab}\n')
                 for i in range(0, len(lists), 10):
@@ -290,6 +331,19 @@ def main(out):
             f.write('    EQUB ' + ', '.join(str(c) for c in carsp) + '\n')
             f.write('    ASSERT P% == HeliSprite\n')
             f.write(f'    EQUB {heli}\n')
+            f.write('    ASSERT P% == GantryX                        ; (the gantry\'s beam by size: its pylon\'s x, its lines less 1,\n')
+            f.write('                                                ; its first line\'s fill in GantryEven for an even\n')
+            f.write('                                                ; bottom line, GantryOdd an odd, a line\'s from it up)\n')
+            if beam:
+                f.write('    EQUB ' + ', '.join(map(str, beam[2])) + '\n')
+                f.write('    EQUB ' + ', '.join(str(h - 1) for h in beam[0]) + '\n')
+                f.write('    EQUB ' + ', '.join(map(str, beam[1])) + '\n')
+                for p in (0, 1):
+                    f.write(f'    ASSERT P% == Gantry{("Even", "Odd")[p]}\n')
+                    fills = [x[p] for x in beam[3]] + [0] * (beam_lines - len(beam[3]))
+                    for i in range(0, len(fills), 16):
+                        f.write('    EQUB ' + ', '.join(f'&{v:02X}' for v in fills[i:i + 16]) + '\n')
+            f.write('    SKIPTO DataSlotParts                        ; (none, or the rest)\n')
             f.write('    ASSERT P% == DataSlotParts\n')
             f.write('ENDSECTION\n')
             f.write('    ENDSECTION\n')
@@ -313,8 +367,9 @@ def main(out):
         f.write('\\\\ spritepieces.6502 - made by tools/gensprites.py: the pieces a stage fills in the data\'s bank (its\n')
         f.write('\\\\ slot, spritestageN.6502\'s two packs, as the slot is more than a playfield): each its address and\n')
         f.write('\\\\ bytes, then 0\n\n')
-        f.write('.SpriteTablePieces\n')
-        f.write('    EQUW SprW, DataSlotParts - SprW\n')
+        f.write('.SpriteTablePieces                          ; (the first in main RAM, D22)\n')
+        f.write('    EQUW SprW, 5 * SprTableSize\n')
+        f.write('    EQUW ObjKind, DataSlotParts - ObjKind\n')
         f.write('    EQUW 0\n')
         f.write('.SpritePartPieces\n')
         f.write(f'    EQUW DataSlotParts, {own_room}\n')
@@ -322,7 +377,9 @@ def main(out):
         f.write('.HeliPieces                                 ; (filled after SpritePartPieces: theirs can reach it)\n')
         f.write(f'    EQUW HeliData, {heli_bytes}\n')
         f.write('    EQUW 0\n')
-        f.write(f'    ASSERT DataSlotParts - SprW <= PlayBytes AND {own_room} <= PlayBytes, "a pack unpacks into a playfield"\n')
+        f.write(f'    ASSERT 5 * SprTableSize + DataSlotParts - ObjKind <= PlayBytes AND {own_room} <= PlayBytes, '
+                '"a pack unpacks into a playfield"\n')
+        f.write('    ASSERT SprH == SprW + SprTableSize AND SprHi == SprW + 4 * SprTableSize, "the tables one after another"\n')
     with open(os.path.join(out, 'heli.6502'), 'w') as f:
         f.write('\\\\ heli.6502 - made by tools/gensprites.py: the helicopter\'s four sprites (stages ' +
                 ', '.join(map(str, helis)) + '), packed once,\n')

@@ -355,6 +355,23 @@ line is `yb - 1.5·scale + hidden` and it has the per-size height from the descr
 byte (from a list, so the bar has coloured stripes) by an opaque unrolled run of `LD (HL),A : INC L` entered
 part-way: 11 T a byte.
 
+In detail (2026-11-02, from the code; the BBC's `gantry_beam` and `gantry_fill`):
+
+- The object pass calls left id 2's handler even when `XL_hi` isn't 0 (`&2446`); every other left object, and
+  every right one, only when it is. Left id 2 is the gantry in stages 3 and 5 and appears in no other stage.
+- The pylon (`&25D4`, the composite) only if `XL_hi` = 0. `size = min(row, 10)`; `xoff` the byte at the
+  descriptor's `(desc + 1)` + 2 + 2(size - 1); the height and the colour list's pointer at + 22 + 3(size - 1).
+- Left column D: 0 if `XL_hi` < 0; none at all if `XL_hi` > 0; else `A = (XL_lo + 16) mod 256 - xoff`, 0 on a
+  borrow, then `A - 8`, 0 on a borrow, else `A >> 2`.
+- Right column E (from `IX - 2`, the row's XR): none if `XR_hi` < 0; 64 if `XR_hi` > 0; else `A = XR_lo + xoff`,
+  64 on a carry, on 0 or from `&F8`; else `A >> 2`.
+- The run is entered by a `JR` at `&253B` whose offset is `&80 - 2(E - D)`, so E ≤ D would jump back into the
+  routine's own code; the BBC draws no beam then (never seen).
+- Bottom line: `yb - (scale + scale >> 1 - (ya - yb))`, 8 bits, which is `ya - 1.5·scale` mod 256: the crest's
+  term cancels. None if bit 7 is set. Lines: `min(height, bottom + 1)`, the colours from the bottom up.
+- Stage 3's right id 8 has the gantry's handler too, but its stream never places it. From the right, `IX - 2`
+  would be the previous row's XL, so E < D.
+
 ## Costs
 
 Measured over 40 game loops a state (single-stepped, T attributed by code address), accelerating and steering.

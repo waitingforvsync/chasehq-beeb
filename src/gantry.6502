@@ -1,0 +1,64 @@
+\\ gantry.6502 - the gantry's beam across the road, stages 3 and 5 (docs/cpc-sprites.md, the CPC's &2474): in
+\\ the code's bank, with the row runner it fills with. objects.6502's gantry_beam places it.
+
+SECTION GameVars
+.BeamLeft                               ; its first column, 0-61
+    SKIP 1
+.BeamRight                              ; the column past its last, 1-64
+    SKIP 1
+.BeamBottom                             ; its bottom line, 0-127
+    SKIP 1
+.BeamLines                              ; its lines less 1, 0 to BeamBottom
+    SKIP 1
+.BeamBuf                                ; each line's fill, from the top
+    SKIP 32
+ENDSECTION
+
+\\ The beam, opaque: each line from the bottom up its fill, across its columns by the row runner entered at
+\\ its first column's store, an RTS patched at its end (the spare store's at 64).
+\\
+\\ Inputs:
+\\     BeamLeft, BeamRight, BeamBottom, BeamLines, BeamBuf
+\\     back: the playfield
+\\
+\\ Outputs:
+\\     the playfield; SkyTop lowered to the beam's top
+\\     A, X, Y: corrupted
+
+.gantry_fill
+{
+    ZA_AUTO1 above                      ; local: the line above its top (&FF at the playfield's top)
+    ZA_AUTO1 stop                       ; local: the RTS's place, LO(Runner) + 3 * BeamRight
+
+    ASSERT LO(Runner) + 3 * 64 < 256
+    LDA BeamRight:ASL A:ADC BeamRight   ; (C clear: 128 at most)
+    ADC #LO(Runner):STA stop:TAY
+    LDA #&60:STA RunnerPage,Y           ; (RTS: the run's end)
+    LDA BeamLeft:ASL A:ADC BeamLeft     ; (C clear)
+    ADC #LO(Runner):STA go+1
+    LDA BeamBottom:SBC BeamLines        ; (C clear: its top less 1)
+    STA above
+    LDY BeamLines                       ; Y: the line less its top (BeamBuf's index), from the bottom
+    LDA BeamBottom
+.row
+    TAX
+    JSR runner_row                      ; (keeps X and Y)
+    TXA:AND #7:TAX                      ; X: the line in its row
+.lineloop
+    LDA BeamBuf,Y
+.go
+    JSR Runner                          ; self-modified: its first column's store
+    ZA_CANCALL Runner
+    DEY:BMI done
+    DEX:BPL lineloop
+    SAME_PAGE lineloop
+    TYA:SEC:ADC above                   ; (a new row: the line, its top + Y)
+    BPL row                             ; always (0-127)
+.done
+    LDY stop:LDA #&9D:STA RunnerPage,Y  ; (STA abs,X back)
+    LDX above:INX                       ; (the top line drawn)
+    CPX SkyTop:BCS @+
+    STX SkyTop
+.@
+    RTS
+}

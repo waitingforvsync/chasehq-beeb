@@ -839,3 +839,78 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   helicopter, which the build before hasn't. Cycles a loop: -11 (window), -9 (drive) in what the bench calls,
   plus air_step and air_move's 37 with no helicopter. compare_tunnel.py (stage 1, the mouth now RowCars' bit
   0): the same 25 of 241 tunnel loops differ as before.
+
+### Room for the gantry (decisions D22)
+- The five per-sprite tables (SprW, SprH, SprStep, SprLo, SprHi: 150 entries each, 750 bytes) moved from the
+  data bank's slot into main RAM (GameVars, from &2600). Each stage's sprite data pack is now two pieces: the
+  tables, then the rest of the slot from ObjKind. bench.py against 8b9e03a: IDENTICAL, -10 to +2 cycles a loop.
+- The faces as 4-bit codes (gentext's pack_face: 5 rows of 32 bytes, a code a nibble, and a 16-byte
+  FaceCodes table): 640 -> 320 bytes, lossless (py65 against the planar faces). msg_face 5,442 -> 8,386 and
+  5,378 -> 8,392 cycles (+2,944, +3,014 a face drawn).
+- The font as 4-bit codes too (656 -> 328 bytes), exact, but page_draw redraws every glyph every loop: the
+  bonus page 23,174 -> 51,960 cycles. Rich chose to revert it and put a stage's road pack in the code bank's
+  free bytes instead (Stage5RoadPack after tunnel.6502; StagePackBank's row for stage 5 says bankcode). With
+  the font plain, its alignment pad (251 bytes once the text code passed &8559) was dropped: Font1 at &856B,
+  where planes 3 and 9 cross a page.
+- Checked: bench.py against 8b9e03a IDENTICAL in all seven runs (cmpbench.py, the pages by name); msg_update
+  +4 cycles (open), +2,937 (a face's first line); page_draw -3 to +23 (the font's new place).
+  check_road.py stage 5: 0 of 600 loops differ (the anchors in 35, row 20's, known).
+
+### The gantry, stages 3 and 5 (docs/cpc-sprites.md, the gantry beam)
+- Decoded in full from &2474 (the doc has it). The CPC's left pass calls left id 2's handler even with its
+  edge off the screen; only stages 3 and 5 place it, and there it's the gantry. Its beam's bottom line,
+  yb - (1.5 scale - (ya - yb)), is ya - 1.5 scale mod 256: the crest's term cancels. Its run is entered by a
+  JR of &80 - 2(E - D), so a beam with no width would jump into the routine's own code: the BBC draws none.
+- Stage 3's right id 8 has the gantry's handler, but its stream never places it (each stage's S4 and S5
+  values counted, every branch): gensprites makes it a plain composite (the pylon alone).
+- gensprites: the pylon's parts (as a composite) for each size, and for the beam GantryX (the pylon's x by
+  size), GantryHeight, GantryAt and two fill tables, GantryEven and GantryOdd (57 lines each in stage 3: a
+  line's MODE 2 byte by its parity, the bottom's parity choosing the table). In the data slot, after
+  HeliSprite: 10 + 10 + 10 + 2 x 57 bytes.
+- objects.6502: one_object on kind 4 calls the rest of itself (the pylon), then gantry_beam: its columns,
+  bottom line and lines as the CPC's, the fills into BeamBuf (main RAM) from the data bank's tables, then
+  draw_beam (plotting.6502) pages the code bank for gantry_fill (gantry.6502): the row runner entered at the
+  first column's store, an RTS at the end column's (the spare store's at 64), a line from the bottom up, the
+  runner's pages patched a row; SkyTop lowered to its top.
+- `work/gantry/compare_gantry.py` (compare_heli's way: lockstep with the CPC's bot, no traffic, every loop
+  with left id 2 in the window): stage 5, 39 loops, 28 differ by 1 or 2 pixels; stage 3, 225 loops to the
+  CPC's time up, 74 differ by 1 to 4. All the differing pixels are on the far road's top line at the
+  horizon (CPC pen 2, the BBC the road's grey pair), the known road difference compare_heli saw; none in the
+  beams or pylons, near or far.
+- bench.py against 8b9e03a: IDENTICAL in all seven runs (stage 1 and the next have no gantry; every object
+  drawn pays the kind test, CMP #4:BNE, 5 cycles).
+- The beams' cost (plot_objects timed with gantry_beam an RTS, then as it is): stage 3, 7,809 cycles a loop
+  with a gantry in view (1,253 to 11,433); stage 5, 4,102 (76 to 7,625).
+- Room: code bank 100 -> 11 free in front of its data (gantry_fill 89 bytes); data bank 724 -> 338 (the
+  pylon's sprites and parts and the beam's tables in the slot); the store 605 -> 172 free and the stages' bank
+  1,222 -> 796 (unpacked, to &C000: the packs 859 bytes bigger); the &259 gap 439 -> 338 (19, 32 and 287 in
+  its three places); main RAM's code still ends at &25B8 (72 bytes below GameVars); GameVars +36 (the
+  beam's), 425 free to the panel. (A mistake: GameVars ends at &2FD4, 44 free; the review found it.)
+
+### The gantry's review (P1 and P3 merged; P2 and P24 for Rich)
+- A review agent (work/review-gantry/) found no bugs and made four patches, each checked exact three ways:
+  the gantry loops of compare_gantry's runs recorded and replayed on each tree (the back playfield byte for
+  byte and SkyTop on every one); gantry_beam on 20,000 random rows a stage (about 8,500 with a beam; a
+  one-column error planted, 942 caught); stages 1, 2 and 4 replayed, 400 loops each. bench.py IDENTICAL for
+  all four.
+- P1, merged: gantry_fill's line loop 34 -> 25 cycles a line (BeamBuf top first, Y down to BMI, a new row's
+  line the top plus Y, no DEC line; its BPL no longer crosses &A100, now SAME_PAGE); the copy 20 -> 16 a line
+  (GantryHeight its lines less 1); BeamLeft stored once; BEQ wide gone (x is 1 at least: gensprites asserts
+  it); draw_beam inlined. Code bank -1, main RAM -14.
+- P3, merged: the gantry's ObjKind &80, tested by BMI after the LDA: 3 cycles less for every object drawn
+  (plot_objects -10 to -29 a loop on average by stage). Main RAM -2.
+- Checked on the merged tree (the disc's files byte for byte the agent's P1+P3 tree): compare_gantry stage
+  5, 39 loops, 28 differ; stage 3, 225 to loop 1043, 74 differ, the same pixels as before (all at the
+  horizon). The beams' cost: stage 3 7,809 -> 7,458 cycles a loop (worst 11,433 -> 10,929); stage 5 4,102
+  -> 3,938 (worst 7,625 -> 7,328). bench.py against 8b9e03a: IDENTICAL in all seven runs.
+- Room now: code bank 12 free (+1) and 5; data bank 338; store 172; stages' bank 796; the &259 gap 354 (19,
+  46, 289: +16); main code ends at &25B8; GameVars 44 free.
+- P2, a trade: gantry_fill and draw_beam gone, gantry_beam its own routine in main RAM that pages the code
+  bank and patches runner_row only for the beam's columns (entered at column L's patch, an RTS over R's):
+  runner_row's cost a loop 1,947 -> 655 (stage 3). Beams: stage 3 7,809 -> 6,280, stage 5 4,102 -> 3,430.
+  Code bank +89 free, main RAM -103, GameVars +4. It moves dzx02 across &0B00 (its BCC copy then crosses a
+  page): each stage load 12,006 to 13,600 cycles slower, not fixed.
+- P24, a trade: P2 with the fills read from main RAM (no BeamBuf, no copy; a third piece in each stage's
+  table pack). Beams: stage 3 -> 5,857, stage 5 -> 3,231. Code bank +89, main RAM -217, GameVars +36, data
+  bank +114, stages' bank +2; stage_load +300 cycles.
+- dzx02 has no SAME_PAGE checks: it sits in one page by luck.

@@ -5,7 +5,7 @@
 \\ pieces (roadpieces.6502 and the rest), the text first and the helicopter last.
 
 \\ Each stage's packs: the helicopter's (0 none), the road's, the sprites' tables and parts, the text's; and the
-\\ zero page byte holding the bank that keeps each (bankstages or bankstore)
+\\ zero page byte holding the bank that keeps each (bankstages, bankstore, or for one bankcode)
 
 StagePacks = {0, Stage1RoadPack, Stage1Sprites.DataPack, Stage1Sprites.PartsPack, Stage1TextPack,
               HeliPack, Stage2RoadPack, Stage2Sprites.DataPack, Stage2Sprites.PartsPack, Stage2TextPack,
@@ -22,7 +22,7 @@ StageParts = 5
     EQUB bankstore, bankstages, bankstages, bankstages, bankstages
     EQUB 0, bankstages, bankstages, bankstages, bankstore
     EQUB bankstore, bankstages, bankstore, bankstore, bankstages
-    EQUB 0, bankstages, bankstore, bankstore, bankstore
+    EQUB 0, bankcode, bankstore, bankstore, bankstore
     ASSERT P% - StagePackBank == LEN(StagePacks), "a bank for each pack"
 
 \\ Each part's bank (its zero page byte) and pieces

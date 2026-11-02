@@ -155,8 +155,9 @@
     STX side
     CLC:ADC side:TAX
     LDA ObjKind,X:BEQ gone
-    CMP #4:BEQ gone                     ; (the gantry: not yet)
     STA kind
+    BMI gantry                          ; (&80, the gantry)
+.object
     TXA:ASL A:STA n                     ; (side * 10 + id) * 10 + size - 1
     ASL A:ASL A:ADC n                   ; (C clear: under 256)
     STA n
@@ -175,6 +176,9 @@
     LDA RowXRHi,Y:BEQ anchored
 .gone
     RTS
+.gantry
+    JSR object                          ; (its pylon as parts, then its beam)
+    JMP gantry_beam
 .leftside
     LDA RowXLLo,Y:STA anchor
     LDA RowXLHi,Y:BNE gone
@@ -260,6 +264,64 @@
     INC parts+1
 .@
     JMP parted
+
+    \\ the gantry's beam (the CPC's &2474), after its pylon, drawn or not: across columns (XL + 8 - x) / 4 (0
+    \\ with the left edge off the left) to (XR + x) / 4 (64 off the right), x its pylon's at the size; its
+    \\ bottom line ya - 1.5 scale, mod 256 (the CPC's yb - (1.5 scale - (ya - yb))), none above the playfield;
+    \\ its size's lines, as far as the playfield's top, each its colour by the line's parity from the bottom
+    \\ up, into BeamBuf from the top: drawn in the code's bank, paged in for it (gantry_fill)
+
+.gantry_beam
+    LDX r:CPX #10:BCC @+
+    LDX #10                             ; X: its size
+.@
+    LDY r
+    LDA RowXLHi,Y:BMI zero              ; (the left edge off the left: from column 0)
+    BNE beamless                        ; (off the right: none)
+    LDA RowXLLo,Y:CLC:ADC #16           ; (its carry dropped, as the CPC's)
+    SEC:SBC GantryX-1,X:BCC zero
+    SBC #8:BCC zero                     ; (C set)
+    LSR A:LSR A
+    BPL lefted                          ; always (0-61)
+.zero
+    LDA #0
+.lefted
+    STA BeamLeft
+    LDA RowXRHi,Y:BMI beamless          ; (the right edge off the left: none)
+    BNE wide                            ; (off the right: to column 64)
+    LDA RowXRLo,Y:CLC:ADC GantryX-1,X
+    BCS wide                            ; (0 only with a carry: x 1 at least, gensprites')
+    CMP #&F8:BCS wide
+    LSR A:LSR A
+    CMP BeamLeft:BEQ beamless:BCS righted   ; (none if it ends where it starts: the CPC's run would go astray)
+.beamless
+    RTS
+.wide
+    LDA #64                             ; (BeamLeft 61 at most)
+.righted
+    STA BeamRight
+    LDA RowScale,Y:LSR A:CLC:ADC RowScale,Y ; 1.5 scale (93 at most: C clear)
+    EOR #&FF:ADC #33                    ; 32 less it
+    CLC:ADC RoadY,Y:BMI beamless        ; ya less it (above the playfield: none)
+    STA BeamBottom
+    LSR A                               ; (C: its parity)
+    LDA GantryAt-1,X:BCC @+
+    ADC #GantryOdd-GantryEven-1         ; (C set: the odd bottom's)
+.@
+    TAY
+    LDA BeamBottom
+    CMP GantryHeight-1,X:BCC lined      ; (as far as the playfield's top: the line its lines less 1)
+    LDA GantryHeight-1,X                ; (its lines less 1 no more than the line: all of them)
+.lined
+    STA BeamLines
+    TAX                                 ; BeamBuf top first: the bottom line's fill at BeamLines
+.lines
+    LDA GantryEven,Y:STA BeamBuf,X
+    INY:DEX:BPL lines
+    LDX bankcode:STX &FE30              ; ROMSEL: the code's bank
+    JSR gantry_fill
+    LDX bankdata:STX &FE30              ; ROMSEL: the data's back
+    RTS
 }
 
 \\ A car, at its projected place, clipped.

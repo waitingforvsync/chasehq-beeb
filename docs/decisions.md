@@ -182,6 +182,28 @@ table 256 and its alignment, a stub), against 716 for the frame: the frame is st
   Offered that or both frames stored, he chose "Store both frames": the sprite slot (8,450 bytes) then packs in
   two, its tables and its parts, each under a playfield.
 
+### D22. Room for the gantry: the glyphs and faces as 4-bit codes, the sprite tables in main RAM (2026-11-02)
+The gantry (stages 3 and 5: a left pylon, 8 sprites, 768 bytes with its part records, and a striped beam)
+needs about 282 more bytes in the data bank (14 free) and about 800 more packed in the store's and stages'
+banks (249 free). Offered sources, Rich chose "Glyph and face 4-bit codes, Sprite tables to main RAM": Font1
+656 -> 328 bytes (its 10 rarest bytes changed to near ones) and the faces 640 -> 320 (lossless), a table
+look-up a byte drawn; and the five per-sprite tables (150 entries each, 750 bytes) from the data bank into
+main RAM, read at the same speed. Not chosen: measuring a stronger packer first.
+- Measured (bench.py): the font's codes exact, but pages redraw every glyph every loop, so the bonus page went
+  23,174 -> 51,960 cycles a loop (the continue 20K -> 49K, the arrest 16K -> 41K, the sighting 7K -> 18K while
+  driving), a message's glyph 316 -> 752, for about 280 bytes. Offered instead a stage's road pack in the code
+  bank's free bytes (stage_load unpacks from any bank), Rich: "Revert font, pack in code bank": the font plain
+  again; the faces stay 4-bit (+2,800 cycles a face drawn).
+
+### D23. The last resort for room: the sampled speech Master-only, in HAZEL (2026-11-02)
+With all four banks in use (free: code 11 + 5, data 338, store 172, stages 796, unpacked), Rich: "A stronger
+packer will barely win anything. My suggestion if we become desperate for space would be to make the sampled
+speech Master-only, and move the samples and player code into HAZEL (&C000..&DFFF). Do this as a last resort
+though."
+- What it would give back: the five phrases' packs, 3,924 bytes of the store bank (&8EDF-&9E32; 16,230 raw),
+  and the player's code from main RAM. Packed, they fit HAZEL's 8K with room for the player; they unpack into
+  the hidden playfield as now.
+
 ---
 
 ## Proposed

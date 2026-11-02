@@ -11,14 +11,16 @@ What text.6502 holds (English only):
   two character cells column by column (the left cell's 8 lines, then the right's), which is the screen's own
   order: on a row-aligned page entry it's 16 consecutive bytes. It's stored byte-planar, byte i of glyph g at
   Font1 + i * Glyphs1 + g, so with X the glyph a glyph is 16 `LDA Font1+i*Glyphs1,X : STA (dst),Y`, with no
-  pointer to make for the source. The panel's message line straddles rows 6 and 7 at line 4: the same 16
+  pointer to make for the source (D22's 4-bit codes for it were measured and undone: pages redraw every glyph
+  every loop). The panel's message line straddles rows 6 and 7 at line 4: the same 16
   bytes go there through two destination pointers, lines 0-3 to row 6 (4 bytes on) and 4-7 to row 7 (4
   bytes back). A size-2 page entry doubles lines 1-6 at run time as the CPC does (&1424, &1436, &1416): white,
   0, 1, 1, 2, 2, 3, 3 in its top row and 4, 4, 5, 5, 6, 6, 7, white in the next, each source byte loaded once.
 - Glyph numbers: 0-9 the digits (0 is the CPC's O, which it uses for zero), 10 space, then the letters without
   O, then . , ! ' -. A figure patched into a page is its digit, or GlyphSpace.
 - The faces (Nancy &D600, the partner &DE00, and the stage's own (&5BCA) if it has one): 8 cells by 40 lines,
-  as the panel's rows 1-5 hold them, 64 bytes a row (cells 43-50, 8 lines each): a row is one 64-byte copy.
+  as the panel's rows 1-5 hold them, 64 bytes a row (cells 43-50, 8 lines each), packed to 32 (D22: byte k
+  FaceCodes' indices for the row's byte k and k + 32; the faces have 14 bytes between them).
 - The message scripts as the CPC's (&1DB4), with the text as glyph numbers, its length first:
       segment:  face (0 the stage's, 1 Nancy, 2 the partner), then lines [n, n glyphs], then &FF (the end) or
                 &FE and an address (static, then that script)
@@ -344,6 +346,15 @@ def static_bytes(white):
 
 # writing
 
+def pack_face(face, codes):
+    """A face's 5 rows of 64 bytes as 5 of 32: byte k the code of the row's byte k, and of byte k + 32 above it."""
+    out = bytearray()
+    for r in range(5):
+        row = face[64 * r:64 * r + 64]
+        out += bytes(codes.index(row[k]) | codes.index(row[k + 32]) << 4 for k in range(32))
+    return out
+
+
 class Out:
     """Baron source with trailing comments on column 40 (44 past it), and a count of the bytes."""
 
@@ -438,6 +449,7 @@ def build(stage, cpc, files):
     w()
     w(f'MsgFaceAt = PanelAddr + {FACE_ROW} * RowBytes + {FACE_CELL} * 8')
     w('MsgFaceRows = 5')
+    w('FaceBytes = 5 * 32', 'a face, packed')
     w('MsgLineTop = PanelAddr + 6 * RowBytes + 4')
     w('MsgLineBottom = PanelAddr + 7 * RowBytes - 4')
     w('MsgLineCell = 1', 'column c\'s left cell is 1 + 2c')
@@ -466,10 +478,19 @@ def build(stage, cpc, files):
     sizes['Font1'] = w.bytes - n0
     w()
 
+    # the faces as 4-bit codes (decisions D22): every face's bytes are one set of 14, so one table
+    codes = sorted(set(face_bytes['FaceNancy']) | set(face_bytes['FacePartner']))
+    assert len(codes) <= 16 and all(set(v) <= set(codes) for v in face_bytes.values()), 'the faces\' bytes'
+    codes += [0] * (16 - len(codes))
+    packed = {name: pack_face(v, codes) for name, v in face_bytes.items()}
+
     n0 = w.bytes
-    w('\\\\ the faces: 5 rows of 64 bytes (cells 43-50, 8 lines each) for panel rows 1-5; by the scripts\' face')
+    w('\\\\ the faces: 5 rows of 64 bytes (cells 43-50, 8 lines each) for panel rows 1-5, each packed to 32: byte k')
+    w('\\\\ a code for the row\'s byte k (bits 0-3) and its byte k + 32 (4-7), FaceCodes\' (D22); by the scripts\' face')
     w('\\\\ byte (0 the stage\'s, in its slot: blank in a stage with none, which shows none; 1 Nancy, 2 the partner)')
     w()
+    w('.FaceCodes')
+    w.equb(hexes(codes))
     w('.FaceLo')
     w.equb([f'LO({n})' for n in ('FaceStage', 'FaceNancy', 'FacePartner')])
     w('.FaceHi')
@@ -477,7 +498,7 @@ def build(stage, cpc, files):
     for name, n, a in faces:
         if name != 'FaceStage':
             w(f'.{name}', f'the CPC\'s &{a:04X}')
-            w.equb(hexes(face_bytes[name]))
+            w.equb(hexes(packed[name]))
     sizes['faces'] = w.bytes - n0
     w()
 
@@ -556,7 +577,7 @@ def build(stage, cpc, files):
 
     b = Built()
     b.lines, b.brief, b.arrest = w.lines, wb, wa
-    b.face = face_bytes.get('FaceStage')
+    b.face = packed.get('FaceStage')
     b.m, b.t, b.faces, b.face_bytes, b.pairs, b.sizes, b.order = m, t, faces, face_bytes, pairs, sizes, order
     return b
 
@@ -575,8 +596,8 @@ def main(out):
         '\\\\ the stage\'s slot (textstageN.6502\'s Stage<n>Text, filled whole): its face (blank if it has none), its',
         '\\\\ arrest page, its briefing\'s first segment',
         '',
-        f'TextSlotBytes = 320 + {arrest} + {brief}',
-        '.FaceStage', '    SKIP 320',
+        f'TextSlotBytes = FaceBytes + {arrest} + {brief}',
+        '.FaceStage', '    SKIP FaceBytes',
         '.PageArrest', f'    SKIP {arrest}',
         '.MsgBriefing', f'    SKIP {brief}', '']
     with open(os.path.join(out, 'text.6502'), 'w') as f:
@@ -591,7 +612,7 @@ def main(out):
                 for i in range(0, len(b.face), 16):
                     f.write('    EQUB ' + ', '.join(hexes(b.face[i:i + 16])) + '\n')
             else:
-                f.write('    SKIP 320                            ; (none)\n')
+                f.write('    SKIP FaceBytes                      ; (none)\n')
             f.write('    ASSERT P% == PageArrest\n')
             f.write('\n'.join(b.arrest.lines) + '\n')
             f.write('    SKIPTO MsgBriefing\n')

@@ -4,9 +4,6 @@
 
     INCLUDE "text.6502"                 ; the message window and the pages
 
-    \\ their data at the low bytes it had in main RAM (&259 on), so Font1's planes cross pages as they did
-
-    PADTO P% + ((LO(TextDataLow) - P%) AND &FF)
     INCLUDE "../build/gen/text.6502"    ; their font, faces, scripts and pages (tools/gentext.py), and the
                                         ; stage's slot at the end
 

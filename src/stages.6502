@@ -43,8 +43,3 @@
     SECTION Stage4TextPacked, transform = "zx02"
         INCLUDE "../build/gen/textstage4.6502"
     ENDSECTION
-
-.Stage5RoadPack
-    SECTION Stage5RoadPacked, transform = "zx02"
-        INCLUDE "../build/gen/roadstage5.6502"
-    ENDSECTION
