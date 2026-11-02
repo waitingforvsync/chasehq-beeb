@@ -180,8 +180,8 @@ ASSERT LaneEntries <= EdgeEntries, "the lane tables hold an entry a line"
     LDA #0
     DEY:DEY
     DEX:BPL streams
-    LDA #LO(StageStartX):STA RoadX
-    LDA #HI(StageStartX):STA RoadX+1
+    LDA StageStartX:STA RoadX
+    LDA StageStartX+1:STA RoadX+1
     LDA #StartH:STA RoadH
     LDA #1:STA RoadScrollCount:STA RoadHalf ; (the first step at once)
     STA ForkHalf

@@ -364,6 +364,11 @@ ENDSECTION
     RTS
 .bonused
     LDA PageOn:BNE still
+    LDX Stage:INX                       ; the next stage (after the fifth the first again, for now: no ending)
+    CPX #6:BCC @+
+    LDX #1
+.@
+    STX Stage
     SEC
     RTS
 }

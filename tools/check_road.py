@@ -1,10 +1,11 @@
 """The BBC's road model (src/road.6502, in py65) against the CPC's (tools/cpc.py), loop by loop.
 
-    .venv/bin/python tools/check_road.py [loops] [right]
+    .venv/bin/python tools/check_road.py [loops] [right] [stage=N]
 
-(right: the bot keeps the car right of centre, X about &D0, so it takes a fork's right branch)
+(right: the bot keeps the car right of centre, X about &D0, so it takes a fork's right branch; stage=N: the
+CPC moved on to stage N by its test mode, and the BBC's stage_load given N)
 
-Starts a game of stage 1 in the CPC (work/logic/game.py, its bot driving) and the road in the BBC code, then
+Starts a game of stage 1 (or N) in the CPC (work/logic/game.py, its bot driving) and the road in the BBC code, then
 each loop feeds the BBC the CPC's speed (at &4219) and the road's X (at &3FCF) and compares, at &4895: the
 segment, the fraction, the horizon, the window's curves, gradients, flags and objects (S4-S6, the BBC's obstacle
 spawn run after the compare, as the CPC's &3305 runs after its render), the boundaries' lines, the
@@ -55,14 +56,37 @@ def right_bot(m):
     return k
 
 
-def main(loops=200, right=False):
+def to_stage(m, stage):
+    """The CPC on to a stage by its test mode's number keys (work/logic/traf_stage.py), checked by its block."""
+    import cpcdsk
+    from cpc import FRAME_T
+    lv = cpcdsk.read_dsk(os.path.join(HERE, '..', 'docs', 'chasehq.dsk'))[f'CHASEHQ.LV{stage}']['data'][:0x2000]
+    m.mem[0x1647] = 1
+    while m.mem[0x164D] < stage:
+        st = m.mem[0x164D]
+        m.keys = {K.two}                        # (in test mode, '2' moves on a stage)
+        while m.mem[0x164D] == st:
+            m.run_to(0x03C2, 50 * FRAME_T)
+            m.run_to(0x03F4, 50 * FRAME_T)
+        m.keys = set()
+        assert m.run_to(0x0362, 4000 * FRAME_T)
+    m.mem[0x1647] = 0
+    assert bytes(m.mem[0x59AB:0x59AB + 0x2000]) == bytes(lv), f'the CPC hasn\'t stage {stage}\'s block'
+
+
+def main(loops=200, right=False, stage=1):
+    from cpc import FRAME_T
     m = start_game()
-    b = Machine()
+    if stage > 1:
+        to_stage(m, stage)
+    b = Machine(stage=stage)
     b.call('road_start')
     bad = s6diff = badcar = badrows = badbounce = 0
     for i in range(loops):
         m.keys = right_bot(m) if right else bot(m)
-        assert m.run_to(0x4219)
+        if not m.run_to(0x4219, 2000 * FRAME_T):
+            print(f'loop {i}: the CPC not at &4219 in 2,000 frames (stage {m.mem[0x164D]}, segment {m.mem[0x1775]})')
+            break
         speed = word(m, 0x177E)
         assert m.run_to(0x3FCF)
         x = word(m, 0x17A0)
@@ -166,4 +190,5 @@ def main(loops=200, right=False):
 
 
 if __name__ == '__main__':
-    main(int(sys.argv[1]) if len(sys.argv) > 1 else 200, 'right' in sys.argv[2:])
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else 200, 'right' in sys.argv[2:],
+         next((int(a[6:]) for a in sys.argv[2:] if a.startswith('stage=')), 1))

@@ -34,7 +34,7 @@
     RTS
 }
 
-\\ The roadside objects (draw_objects, in the data's bank), the data's bank paged in for them.
+\\ The roadside objects (draw_objects, objects.6502), the data's bank paged in for them.
 \\
 \\ Inputs:
 \\     the road's rows; back

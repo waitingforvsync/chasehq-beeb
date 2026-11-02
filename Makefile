@@ -23,10 +23,12 @@ TITLE := $(shell date +%y%m%d-%H%M)
 
 SRC = src/boot.6502 src/chasehq.6502
 GENOUT = $(GEN)/gen.6502 $(GEN)/panel.bin $(GEN)/siren.6502
-ROADOUT = $(GEN)/road.6502
-SPROUT = $(GEN)/sprites.6502
+STAGES = 1 2 3 4 5
+ROADOUT = $(GEN)/road.6502 $(GEN)/roadpieces.6502 $(foreach n,$(STAGES),$(GEN)/roadstage$(n).6502)
+SPROUT = $(GEN)/sprites.6502 $(GEN)/spritepieces.6502 $(foreach n,$(STAGES),$(GEN)/spritestage$(n).6502)
 SPEECHOUT = $(GEN)/speech.6502 $(GEN)/speechstore.6502 $(foreach n,1 2 3 4 5,$(GEN)/speech$(n).bin)
-TEXTOUT = $(GEN)/text.6502 $(GEN)/dissolve.6502
+TEXTOUT = $(GEN)/text.6502 $(GEN)/dissolve.6502 $(GEN)/textpieces.6502 \
+          $(foreach n,$(STAGES),$(GEN)/textstage$(n).6502)
 DEPS = $(wildcard src/*.6502) $(GENOUT) $(ROADOUT) $(SPROUT) $(SPEECHOUT) $(TEXTOUT)
 
 all: $(BUILD)/chasehq.ssd
@@ -34,10 +36,10 @@ all: $(BUILD)/chasehq.ssd
 $(GENOUT) &: tools/gendata.py tools/cpc.py tools/cpcdsk.py $(DSK) | $(BUILD)
 	$(PY) tools/gendata.py $(GEN)
 
-$(ROADOUT): tools/genroad.py tools/gendata.py tools/cpc.py tools/cpcdsk.py $(DSK) | $(BUILD)
+$(ROADOUT) &: tools/genroad.py tools/gendata.py tools/cpc.py tools/cpcdsk.py $(DSK) | $(BUILD)
 	$(PY) tools/genroad.py $(GEN)
 
-$(SPROUT): tools/gensprites.py tools/gendata.py tools/cpc.py tools/cpcdsk.py $(DSK) | $(BUILD)
+$(SPROUT) &: tools/gensprites.py tools/gendata.py tools/cpc.py tools/cpcdsk.py $(DSK) | $(BUILD)
 	$(PY) tools/gensprites.py $(GEN)
 
 $(SPEECHOUT) &: tools/genspeech.py tools/cpc.py tools/cpcdsk.py $(DSK) | $(BUILD)

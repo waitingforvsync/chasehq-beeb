@@ -1,20 +1,36 @@
 \\ store.6502 - the store's bank (the third): the message window and the pages with their data (decisions
-\\ D19), what the game keeps packed (D17), and the decoder that unpacks it, all run from here with this bank
-\\ paged in. For now the packed are the speech's phrases, which speak unpacks into the hidden playfield.
+\\ D19), run from here with this bank paged in, and what the game keeps packed (D17), which main RAM's
+\\ unzx unpacks: the speech's phrases, which speak unpacks into the hidden playfield, and some stages' packs.
 
     INCLUDE "text.6502"                 ; the message window and the pages
 
     \\ their data at the low bytes it had in main RAM (&259 on), so Font1's planes cross pages as they did
 
     PADTO P% + ((LO(TextDataLow) - P%) AND &FF)
-    INCLUDE "../build/gen/text.6502"    ; their font, faces, scripts and pages (tools/gentext.py)
-
-\\ The decoder (dzx02.6502): storezx.unpack unpacks the ZX02 stream at storezx.src, in this bank, to
-\\ storezx.dst
-
-.storezx
-{
-    INCLUDE "dzx02.6502"
-}
+    INCLUDE "../build/gen/text.6502"    ; their font, faces, scripts and pages (tools/gentext.py), and the
+                                        ; stage's slot at the end
 
     INCLUDE "../build/gen/speechstore.6502" ; the phrases (tools/genspeech.py)
+
+\\ the stages' packs the stages' bank hasn't room for (stageload.6502's StagePackBank)
+
+.Stage4DataPack
+    SECTION Stage4DataPacked, transform = "zx02"
+        INCLUDE "../build/gen/spritestage4.6502"
+    ENDSECTION
+
+
+.Stage5DataPack
+    SECTION Stage5DataPacked, transform = "zx02"
+        INCLUDE "../build/gen/spritestage5.6502"
+    ENDSECTION
+
+.Stage5TextPack
+    SECTION Stage5TextPacked, transform = "zx02"
+        INCLUDE "../build/gen/textstage5.6502"
+    ENDSECTION
+
+.Stage3TextPack
+    SECTION Stage3TextPacked, transform = "zx02"
+        INCLUDE "../build/gen/textstage3.6502"
+    ENDSECTION

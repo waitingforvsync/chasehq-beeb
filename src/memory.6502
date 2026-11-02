@@ -39,7 +39,7 @@ BankLoad = &3000                        ; where !BOOT loads a bank's packed file
 TextDataLow = &59                       ; the text's data's low byte in the store's bank (store.6502)
 SwramOrg = &8000
 SwramEnd = &C000
-CodeDataOrg = &A65F                     ; the code's bank's data (gen.6502, road.6502), fixed so that a
+CodeDataOrg = &A55F                     ; the code's bank's data (gen.6502, road.6502), fixed so that a
                                         ; change to the code moves no table, nor its page crossings
 CodeVarsOrg = &B500                     ; the code's bank's own workspace (CodeVars): the loader's tables,
                                         ; the lane tables

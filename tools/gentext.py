@@ -367,11 +367,15 @@ def hexes(data):
     return [f'&{v:02X}' for v in data]
 
 
-def main(out, stage=1):
-    os.makedirs(out, exist_ok=True)
-    cpc = CPC()
-    assert cpc.run_to(0x0300)
-    files = read_dsk(os.path.join(os.path.dirname(__file__), '..', 'docs', 'chasehq.dsk'))
+STAGES = (1, 2, 3, 4, 5)
+
+
+class Built:
+    """A stage's text: the shared lines (the same in every stage) and its own: its face, arrest page and
+    briefing's first segment."""
+
+
+def build(stage, cpc, files):
     m = Mem(bytes(cpc.mem), files[f'CHASEHQ.LV{stage}']['data'])
     pairs = [pair_for(cpc.inks[p]) for p in range(16)]
     t = Text(m, pairs)
@@ -380,16 +384,18 @@ def main(out, stage=1):
     stage_face = m.rw(0x5BCA)
     if stage_face:
         faces.insert(0, ('FaceStage', 0, stage_face))
+    briefing = m.rw(0x5BDA)
     face_bytes = {}
     for name, _, a in faces:
         cols = block_colours(cpc_pens(m, a, FACE_W, FACE_H), pairs)
         face_bytes[name] = b''.join(column_bytes(cols[8 * r:8 * r + 8], range(8)) for r in range(5))
 
-    roots = MESSAGES + (AIRBORNE if stage_face else []) + [BRIEFING[:1] + (m.rw(0x5BDA),) + BRIEFING[2:]]
+    roots = MESSAGES + AIRBORNE + [BRIEFING[:1] + (briefing,) + BRIEFING[2:]]
     for _, a, _, _ in roots:
         t.node(a)
-    for a, n in t.nodes.items():
-        assert n[0] == 'choice' or n[1] != 0 or stage_face, f'&{a:04X} shows a stage face stage {stage} lacks'
+    for a, n in t.nodes.items():                    # (the airborne messages are there in every stage)
+        air = any(a == x for _, x, _, _ in AIRBORNE)
+        assert n[0] == 'choice' or n[1] != 0 or stage_face or air, f'&{a:04X} shows a stage face stage {stage} lacks'
     names = {a: name for name, a, _, _ in roots}
     for label, a, where in PAGES:
         t.page(label, m.rw(0x5BDC) if a == 'arrest' else a, where)
@@ -398,9 +404,11 @@ def main(out, stage=1):
         return names.get(a, f'Msg{a:04X}')
 
     w = Out()
+    wb, wa = Out(), Out()                           # the stage's own: its briefing's first segment, its arrest page
     sizes = {}
     w('\\\\ text.6502 - made by tools/gentext.py from the CPC disc: do not edit.')
-    w(f'\\\\ The message window\'s, the pages\' and the dissolve\'s data, stage {stage}, English (docs/cpc-text.md).')
+    w('\\\\ The message window\'s and the pages\' data, English (docs/cpc-text.md); each stage\'s own (its face, its')
+    w('\\\\ arrest page, its briefing) in the slot at the end, from textstageN.6502 at a stage\'s start.')
     w()
     w('\\\\ the glyphs\' numbers: 0-9 the digits (the O is 0), 10 space, the letters, then . , ! \' -; TextGlyphs maps')
     w('\\\\ a string to them (Baron\'s FIND errs on a character with no glyph), and GLYPHS puts down its length,')
@@ -460,18 +468,16 @@ def main(out, stage=1):
 
     n0 = w.bytes
     w('\\\\ the faces: 5 rows of 64 bytes (cells 43-50, 8 lines each) for panel rows 1-5; by the scripts\' face')
-    w('\\\\ byte (0 the stage\'s, 1 Nancy, 2 the partner)')
-    if not stage_face:
-        w(f'\\\\ (stage {stage} has no face of its own: (&5BCA) is 0 and no script shows face 0; 0 points at Nancy)')
+    w('\\\\ byte (0 the stage\'s, in its slot: blank in a stage with none, which shows none; 1 Nancy, 2 the partner)')
     w()
-    lab = {n: name for name, n, _ in faces}
     w('.FaceLo')
-    w.equb([f'LO({lab.get(n, "FaceNancy")})' for n in range(3)])
+    w.equb([f'LO({n})' for n in ('FaceStage', 'FaceNancy', 'FacePartner')])
     w('.FaceHi')
-    w.equb([f'HI({lab.get(n, "FaceNancy")})' for n in range(3)])
+    w.equb([f'HI({n})' for n in ('FaceStage', 'FaceNancy', 'FacePartner')])
     for name, n, a in faces:
-        w(f'.{name}', f'the CPC\'s &{a:04X}')
-        w.equb(hexes(face_bytes[name]))
+        if name != 'FaceStage':
+            w(f'.{name}', f'the CPC\'s &{a:04X}')
+            w.equb(hexes(face_bytes[name]))
     sizes['faces'] = w.bytes - n0
     w()
 
@@ -492,9 +498,12 @@ def main(out, stage=1):
             order.append(x)
             n = t.nodes[x]
             todo += n[1] if n[0] == 'choice' else [n[3]] if n[3] is not None else []
+    shared_w = w
     for a in order:
+        w = wb if a == briefing else shared_w
         n = t.nodes[a]
-        w(f'.{label(a)}', f'the CPC\'s &{a:04X}')
+        if a != briefing:
+            w(f'.{label(a)}', f'the CPC\'s &{a:04X}')
         if n[0] == 'choice':
             w('    EQUB &FC:EQUW ' + ', '.join(label(x) for x in n[1]))
             w.bytes += 7
@@ -509,6 +518,7 @@ def main(out, stage=1):
         else:
             w(f'    EQUB &FE:EQUW {label(nxt)}')
             w.bytes += 3
+    w = shared_w
     sizes['scripts'] = w.bytes - n0
     w()
 
@@ -519,7 +529,9 @@ def main(out, stage=1):
     w('\\\\ then 0. A request starts a page again')
     w()
     for name, last, entries, where in t.pages:
-        w(f'.{name}', where)
+        w = wa if name == 'PageArrest' else shared_w
+        if name != 'PageArrest':
+            w(f'.{name}', where)
         w.equb([str(last)], 'its last loop')
         for at, size, row, cell, s, patches in entries:
             w(f'    EQUB {at}, {size}:EQUW {row} * RowBytes + {cell} * 8', f'appears on loop {at}; size {size}, row {row}, cell {cell}')
@@ -538,11 +550,65 @@ def main(out, stage=1):
                     w(f'    EQUB TextGlyphs("{s[c:c + cnt]}")')
                     i = c + cnt
         w.equb(['0'])
+    w = shared_w
     sizes['pages'] = w.bytes - n0
     w()
 
+    b = Built()
+    b.lines, b.brief, b.arrest = w.lines, wb, wa
+    b.face = face_bytes.get('FaceStage')
+    b.m, b.t, b.faces, b.face_bytes, b.pairs, b.sizes, b.order = m, t, faces, face_bytes, pairs, sizes, order
+    return b
+
+
+def main(out):
+    os.makedirs(out, exist_ok=True)
+    cpc = CPC()
+    assert cpc.run_to(0x0300)
+    files = read_dsk(os.path.join(os.path.dirname(__file__), '..', 'docs', 'chasehq.dsk'))
+    built = {s: build(s, cpc, files) for s in STAGES}
+    for s in STAGES:
+        assert built[s].lines == built[1].lines, f'stage {s}\'s shared text differs from stage 1\'s'
+    arrest = max(built[s].arrest.bytes for s in STAGES)
+    brief = max(built[s].brief.bytes for s in STAGES)
+    lines = built[1].lines + [
+        '\\\\ the stage\'s slot (textstageN.6502\'s Stage<n>Text, filled whole): its face (blank if it has none), its',
+        '\\\\ arrest page, its briefing\'s first segment',
+        '',
+        f'TextSlotBytes = 320 + {arrest} + {brief}',
+        '.FaceStage', '    SKIP 320',
+        '.PageArrest', f'    SKIP {arrest}',
+        '.MsgBriefing', f'    SKIP {brief}', '']
     with open(os.path.join(out, 'text.6502'), 'w') as f:
-        f.write('\n'.join(w.lines) + '\n')
+        f.write('\n'.join(lines) + '\n')
+    for s in STAGES:
+        b = built[s]
+        with open(os.path.join(out, f'textstage{s}.6502'), 'w') as f:
+            f.write(f'\\\\ textstage{s}.6502 - made by tools/gentext.py: stage {s}\'s slot in the store\'s bank (text.6502\'s),\n')
+            f.write('\\\\ rephased to its place: its face, its arrest page, its briefing\'s first segment.\n\n')
+            f.write(f'SECTION Stage{s}Text, org = FaceStage\n')
+            if b.face:
+                for i in range(0, len(b.face), 16):
+                    f.write('    EQUB ' + ', '.join(hexes(b.face[i:i + 16])) + '\n')
+            else:
+                f.write('    SKIP 320                            ; (none)\n')
+            f.write('    ASSERT P% == PageArrest\n')
+            f.write('\n'.join(b.arrest.lines) + '\n')
+            f.write('    SKIPTO MsgBriefing\n')
+            f.write('\n'.join(b.brief.lines) + '\n')
+            f.write('    ASSERT P% <= MsgBriefing + ' + str(brief) + '\n')
+            f.write('ENDSECTION\n')
+    with open(os.path.join(out, 'textpieces.6502'), 'w') as f:
+        f.write('\\\\ textpieces.6502 - made by tools/gentext.py: the piece a stage fills in the store\'s bank (its slot,\n')
+        f.write('\\\\ textstageN.6502\'s): its address and bytes, then 0\n\n')
+        f.write('.TextPieces\n    EQUW FaceStage, TextSlotBytes\n    EQUW 0\n')
+    print(f'text: arrest pages {[built[s].arrest.bytes for s in STAGES]} in {arrest}, briefings '
+          f'{[built[s].brief.bytes for s in STAGES]} in {brief}; faces in stages '
+          f'{[s for s in STAGES if built[s].face]}')
+    b = built[1]
+    m, t, faces, face_bytes, pairs, sizes, order = b.m, b.t, b.faces, b.face_bytes, b.pairs, b.sizes, b.order
+    stage = 1
+    w = Out()
     w.lines = ['\\\\ dissolve.6502 - made by tools/gentext.py from the CPC disc: do not edit.', '']
 
     n0 = w.bytes
@@ -640,4 +706,4 @@ def face_preview(face_bytes, path):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else 'build/gen', int(sys.argv[2]) if len(sys.argv) > 2 else 1)
+    main(sys.argv[1] if len(sys.argv) > 1 else 'build/gen')

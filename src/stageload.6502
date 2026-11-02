@@ -1,0 +1,100 @@
+\\ stageload.6502 - a stage's own data put in place at its start (decisions D17, P12): its three parts (the
+\\ road's in the code's bank, the sprites' in the data's, the text's in the store's), each kept packed in the
+\\ stages' bank or the store's (stages.6502, store.6502) and filled in as pieces (roadpieces.6502 and the rest).
+
+\\ Each stage's packs: the road's, the sprites', the text's; and the zero page byte holding the bank that keeps
+\\ each (bankstages or bankstore)
+
+StagePacks = {Stage1RoadPack, Stage1DataPack, Stage1TextPack, Stage2RoadPack, Stage2DataPack, Stage2TextPack,
+              Stage3RoadPack, Stage3DataPack, Stage3TextPack, Stage4RoadPack, Stage4DataPack, Stage4TextPack,
+              Stage5RoadPack, Stage5DataPack, Stage5TextPack}
+.StagePackLo
+    EQUB LO(StagePacks)
+.StagePackHi
+    EQUB HI(StagePacks)
+.StagePackBank
+    EQUB bankstages, bankstages, bankstages, bankstages, bankstages, bankstages
+    EQUB bankstages, bankstages, bankstore, bankstages, bankstore, bankstages
+    EQUB bankstages, bankstore, bankstore
+
+\\ Each part's bank (its zero page byte) and pieces
+
+.PartBank
+    EQUB bankcode, bankdata, bankstore
+.PartPiecesLo
+    EQUB LO(RoadPieces), LO(SpritePieces), LO(TextPieces)
+.PartPiecesHi
+    EQUB HI(RoadPieces), HI(SpritePieces), HI(TextPieces)
+
+\\ Put a stage's own data in place: for each part, its pack unpacked into the hidden playfield from the bank
+\\ that keeps it, then its pieces copied up into the part's bank, one after another.
+\\
+\\ Inputs:
+\\     Stage: 1-5
+\\     back, reqshow
+\\
+\\ Outputs:
+\\     the stage's parts in their banks; the hidden playfield overwritten, SkyTop and SkyOther 0
+\\     A, X, Y: corrupted
+
+.stage_load
+{
+    ZA_AUTO1 part                       ; local: the part, 2 down to 0
+    ZA_AUTO2 piece                      ; local: its next piece's entry
+    ZA_AUTO2 from, to                   ; local: the copy's source (on through the playfield) and destination
+    ZA_AUTO1 left                       ; local: a piece's bytes past its whole pages
+
+    JSR wait_back                       ; (the playfield last drawn shown: back the hidden one)
+    LDA #0:STA SkyTop:STA SkyOther      ; (neither playfield's sky known any more)
+    LDA #2:STA part
+.nextpart
+    LDA Stage:ASL A:ADC Stage           ; (C clear) 3 x the stage
+    ADC part:TAX                        ; + the part: its pack's index + 3
+    LDA StagePackLo-3,X:STA unzx.src
+    LDA StagePackHi-3,X:STA unzx.src+1
+    LDY StagePackBank-3,X
+    LDA &0000,Y:STA &FE30               ; ROMSEL: the bank that keeps it
+    LDA #0:STA unzx.dst:STA from
+    LDA back:STA unzx.dst+1:STA from+1
+    JSR unzx.unpack
+    LDX part
+    LDY PartBank,X
+    LDA &0000,Y:STA &FE30               ; ROMSEL: the part's bank
+    LDA PartPiecesLo,X:STA piece
+    LDA PartPiecesHi,X:STA piece+1
+    JSR pieces
+    DEC part:BPL nextpart
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    RTS
+
+    \\ each piece: its address (0 the end) and bytes, its whole pages then the rest
+
+.pieces
+    LDY #0:LDA (piece),Y:STA to
+    INY:LDA (piece),Y:BNE @+
+    RTS                                 ; (no piece in page 0: the end)
+.@
+    STA to+1
+    INY:LDA (piece),Y:STA left
+    INY:LDA (piece),Y:TAX               ; X: its whole pages
+    LDA piece:CLC:ADC #4:STA piece
+    BCC @+
+    INC piece+1
+.@
+    LDY #0
+    TXA:BEQ rest
+.pages
+    LDA (from),Y:STA (to),Y
+    INY:BNE pages
+    INC from+1:INC to+1
+    DEX:BNE pages
+.rest
+    LDX left:BEQ pieces
+.bytes
+    LDA (from),Y:STA (to),Y
+    INY:DEX:BNE bytes
+    TYA:CLC:ADC from:STA from           ; (Y: the rest's bytes, so from on past the piece)
+    BCC pieces
+    INC from+1
+    BCS pieces                          ; always
+}

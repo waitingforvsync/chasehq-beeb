@@ -111,7 +111,7 @@ def store_labels(path=os.path.join(BUILD, 'chasehq.json')):
 class Machine:
     """py65 over 64K, the banks paged in at &8000 by writes to ROMSEL."""
 
-    def __init__(self, ssd=os.path.join(BUILD, 'chasehq.ssd')):
+    def __init__(self, ssd=os.path.join(BUILD, 'chasehq.ssd'), stage=1):
         self.syms = symbols()
         self.store = store_labels()
         files = ssd_files(ssd)
@@ -139,6 +139,10 @@ class Machine:
         self.ram[load:load + len(chase2)] = chase2
         self.call('make_tables')
         self.ram[load:load + len(chase2)] = bytes(len(chase2))
+        if 'stage_load' in self.syms:                   # the stage's own data put in place, as stage_start does
+            self.poke('back', 0x40)
+            self.poke('Stage', stage)
+            self.call('stage_load', max_steps=20_000_000)
 
     def _romsel(self, address, value):
         if value != self.paged:

@@ -156,6 +156,15 @@ with the data bank paged, at the same speed there).
   a look-up a byte when a face is drawn (once a message). Rich: "we can note that maybe there's scope for
   glyph compression if we need it, for now let's continue with the next step".
 
+### D20. The stage switch, in three steps (2026-11-02; was P12)
+Offered the plan (each stage's data in fixed slots, every stage packed in the store's and stages' banks, stage 1
+unpacked at a game's start like any other, the game moving on after the bonus), Rich: "let's go for it".
+- As built: each bank's part of a stage is a list of pieces at fixed addresses (the road's tables where they
+  were, so their page crossings stay; the sprites' a slot at the data bank's end; the text's a slot after the
+  store's text), each stage's packed by part. stage_load (main RAM) unpacks a part into the hidden playfield
+  and copies its pieces up. The stage's four constants are bytes in the code bank, read where they were
+  immediates.
+
 ---
 
 ## Proposed
@@ -224,28 +233,6 @@ no stubs; its code (1.3K) is in the code bank. The sprite review's compiled turb
 that gap, go in the code bank instead. Left: the code bank about 570 bytes, main RAM about 250 before
 GameVars, the gap 288, the data bank about 300. The dissolve's masks (316 bytes) and the rest of the game's
 flow will need room: the title and the stage intro may want an overlay or a bank of their own.
-
-### P12. The stage switch: fixed slots, every stage unpacked from the store (2026-11-02, Claude; for D17)
-- Each bank's own part of a stage (code bank: the road's tables, streams, backdrop and colours; data bank: the
-  sprite tables, object parts and the stage's sprites and cars; main RAM: its briefing, arrest page, face and
-  airborne messages) goes in a slot at a fixed address, sized for the largest stage. Its tables come first at
-  fixed addresses, the size of the largest stage's (SprW etc.: 142 entries); what varies (streams, parts,
-  images) follows, reached only through those tables. The four stage constants used as immediates
-  (CrimDodgeGap, CrimSprintGap, TrafficGap, StageStartX) become a small header read at their uses. Font1
-  holds the glyphs of every stage's text.
-- The generators run over all five stages and write the shared data and each stage's slots; each slot is a
-  nested section rephased to its slot's address and packed into the store (banks 3 and 4), stage 1's too.
-  The slots in the bank images are then empty, and a game's start unpacks stage 1 like any other.
-- Unpacking: the decoder runs in the store's bank, so a slot in the code or data bank is unpacked into a
-  playfield and copied up by a loop in main RAM; the main RAM slot is unpacked straight into place.
-- Room (from the LV2-LV5 builds, not yet exact): the slots' largest stages against stage 1's need about +250
-  bytes in the code bank, +320 in the data bank (+140 of it the sprite tables at 142 entries) and +470 in main
-  RAM, plus the switch's code. Free now: 15, 146, and in main RAM 388 at its end, 256 more if GameVars moves
-  up a page, and D18's 128 in the low gaps. So the code and data banks need about 250 and 180 more:
-  - code bank: move code that needs the bank paged but not its place there into main RAM (the code bank is
-    paged in everywhere outside the sprite stubs, so it runs as fast), or into the store with stubs;
-  - data bank: the player's car drawn mirrored instead of stored twice (3,689 bytes; its cycles not yet
-    measured), or the tiled bands split at the repeat (266 bytes for about 1,300 cycles a loop).
 
 ---
 

@@ -750,3 +750,46 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   (4-7); the partner's "YAOOOOO" with his face, and the sighting's page; no crash. The start's phrase 5 and
   the stage's phrase 3 written as the reference, write for write (phrase 3's capture caught 7 writes more
   after it: the IRQ's next frame writing every channel, as speak leaves it to).
+- Commit 7c54468's message gives the code bank as 5 -> 1,427 free: 5 is after p5 and p7, which the same
+  commit holds; from the commit before (72a7e83) it's 50 -> 1,427.
+
+### The stage switch: all five stages, packed (decisions D20, D19)
+- The generators run over all five stages (genroad, gensprites, gentext; no stage argument now) and check that
+  everything they call shared is the same in every stage. They write the shared data (road.6502, sprites.6502,
+  text.6502) with each stage's own reserved, each stage's own as pieces rephased to their places
+  (roadstageN, spritestageN, textstageN), and the pieces' lists for main RAM (roadpieces, spritepieces,
+  textpieces).
+  - The road's own: ObstacleWidth, the roadside collision tables, the streams run (the streams, room to
+    1,478 bytes, their starts, the backdrop, the fills), RumbleA, RumbleC, LaneBytes and the four stage
+    constants after it. All stay at their addresses; the tables before the streams are a page lower
+    (CodeDataOrg &A65F -> &A55F) with the same low bytes, the streams' room grown by that page (stage 2's are
+    1,471 bytes).
+  - The sprites' own: a slot at the data bank's end, 7,923 bytes: the five sprite tables at 142 entries (stage
+    5's count), ObjKind, the part tables, CarSprite, then the parts and the stage's sprites (6,751 at most).
+    The player's car (sprites 0-23) is shared.
+  - The text's own: a slot after the store's text, 569 bytes: the stage's face (stages 2 and 4; blank
+    otherwise), its arrest page, its briefing's first segment. FaceLo/Hi always point face 0 at it, and the
+    airborne messages are always there.
+- The packs (`src/stages.6502` and `src/store.6502`, a pack a part a stage): 12 in the stages' bank (16,237
+  bytes), 3 in the store with the text and speech (15,629). Packed, a stage's road is 1,067-1,158 bytes, its
+  sprites 3,015-3,947, its text 206-333.
+- `stage_load` (`src/stageload.6502`, main RAM): for each part, its pack unpacked into the hidden playfield
+  from the bank that keeps it, then its pieces copied up into the part's bank. 819,514 cycles in py65 (0.4 s),
+  once a stage. stage_start calls it first; the game sets `back` before its first.
+- The flow: after the bonus page, the next stage (after the fifth, the first again: no ending yet).
+- D19's data-bank part: tunnel_state, draw_objects, one_car and tile_height moved to main RAM
+  (`src/objects.6502`, in the &259 gap at the low bytes they had), run with the data bank paged as before;
+  the decoder too (unzx, for both the store's and the stages' packs).
+- Checked: bench.py (its start now sets `back` before stage_start) against 7c54468, all seven runs
+  IDENTICAL, stage 1 coming from its packs. Cycles +60 to +73 a loop (the sprite tables and data at new
+  places). jsbeeb (real IRQ, Stage set at the first stage_load, 80 loops of the demo rule): stages 1-5 each
+  drawn with its own backdrop, colours, roadside objects and traffic, no crash.
+- Room: code bank 1,169 free in front of its data and 5 before RoadT; data bank 520 free; main RAM 1,084
+  at its end and 518 in the &259 gap (and 46 in a pad); the store 755 free; the stages' bank 147.
+- check_road.py (now with stage=N: the CPC moved on by its test mode's '2', the BBC's Machine(stage=N)
+  running stage_load): stage 1 0 of 960 loops differ, the anchors in 3 (as before); stages 2-5, 600 loops on
+  the left branch: 2, 0, 0, 0 loops differ, the rows' anchors in 6, 47, 3, 35. The same as the LV2-LV5
+  decode's own builds gave (work/lv/road.log, road25.log): stage 2's summed gradient of -128 and row 20's
+  anchor, both still open.
+- Tools: `tools/machine.py` loads a stage itself (stage 1 unless given), so check_road, compare_road and
+  compare_tunnel need no change; `work/text/bbc_text.py` no longer pokes &02 (now bankstore).

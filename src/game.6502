@@ -1,9 +1,10 @@
-\\ game.6502 - the main loop. For now stage 1, again and again: the road, the traffic, the criminal, the
-\\ clock and the score.
+\\ game.6502 - the main loop: the road, the traffic, the criminal, the clock and the score, the stages in turn
+\\ (after the fifth, the first again for now: no ending yet).
 
 ZA_AUTO1 back                           ; the back playfield's high byte, &40 or &60 (the IRQ flips it)
 
-\\ The game: stage 1, for good; after a game over with the score cleared, after an arrest with it kept.
+\\ The game: from stage 1; after a game over again with the score cleared, after an arrest the next stage with
+\\ it kept.
 \\
 \\ Inputs:
 \\     none
@@ -25,8 +26,8 @@ ENDSECTION
     LDA #3:STA StagePhrase
     JSR flow_new_game
     JSR text_new_game
+    LDA #HI(PlayAddrB):STA back         ; (A shown first; B's free for stage_load meanwhile)
     JSR stage_start
-    LDA #HI(PlayAddrB):STA back         ; (A shown first)
     JSR road_frame
     JSR road_draw
     JSR show
@@ -120,8 +121,8 @@ ENDSECTION
 
 .stage_start
 {
+    JSR stage_load                      ; (SkyTop and SkyOther 0: neither playfield's sky known to be drawn)
     LDA #0:STA StageLoops
-    STA SkyTop:STA SkyOther             ; (neither playfield's sky known to be drawn)
     JSR road_start
     JSR car_start
     JSR traffic_start

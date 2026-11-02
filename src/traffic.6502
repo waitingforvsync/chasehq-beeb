@@ -76,7 +76,7 @@ ENDSECTION
     STA ObjType,X:STA ObjRow,X:STA ObjVelHi,X:STA ObjHeight,X:STA ObjFlip,X
     DEX:BPL clear
     STA Overtakes
-    LDA #TrafficGap:STA SpawnCount
+    LDA TrafficGap:STA SpawnCount
     LDA #&7B:STA Rng
     LDA #&2D:STA Rng+1
     LDA #&E9:STA Rng+2
@@ -185,7 +185,7 @@ ZA_AUTO1 rngt                           ; local to random: the sum rotated
 {
     ZA_AUTO1 lo, hi                     ; local: the lane range
 
-    JSR random:AND #15:CLC:ADC #TrafficGap
+    JSR random:AND #15:CLC:ADC TrafficGap
     LDY CrimSighted:BEQ @+
     ADC #25                             ; (C clear)
 .@
@@ -718,7 +718,7 @@ ENDSECTION
     LDA CrimMoving:BNE range
     LDA depth:CMP #7:BCS range
     DEC CrimDodgeCount:BNE @+               ; (C clear: the borrow)
-    JSR random:AND #31:CLC:ADC #CrimDodgeGap:STA CrimDodgeCount
+    JSR random:AND #31:CLC:ADC CrimDodgeGap:STA CrimDodgeCount
     SEC                                     ; (no borrow)
 .@
     LDY #0
@@ -792,7 +792,7 @@ ENDSECTION
     LDX depth
     LDA CrimSprint:BNE sprinting
     DEC CrimSprintCount:BNE paced
-    JSR random:AND #15:CLC:ADC #CrimSprintGap:STA CrimSprintCount
+    JSR random:AND #15:CLC:ADC CrimSprintGap:STA CrimSprintCount
     LDA #10:STA CrimSprint
 .sprinting
     DEC CrimSprint:BEQ paced

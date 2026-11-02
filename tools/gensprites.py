@@ -143,12 +143,12 @@ class Stage:
         return out
 
 
-def main(out, stage=1):
-    os.makedirs(out, exist_ok=True)
-    m = CPC()
-    assert m.run_to(0x0300)
-    mem = bytes(m.mem)
-    inks = list(m.inks)
+STAGES = (1, 2, 3, 4, 5)
+CAR_SPRITES = 24                                    # the player's car's, the same in every stage: 0-23
+
+
+def stage_sprites(stage, files, mem, inks):
+    """A stage's sprites (the player's car first), its objects' kinds, part lists and records, its cars."""
     sprites = []                                    # (name, w bytes, h, data)
     for kind, table, count in (('Body', 0x53D3, 9), ('Wheels', 0x53F7, 3)):
         for i in range(count):
@@ -156,10 +156,9 @@ def main(out, stage=1):
             cols = colours(cpc_pens(mem, lo | hi << 8, w, h), inks)
             sprites.append((f'Car{kind}{i}', w, h, columns(cols)))
             sprites.append((f'Car{kind}{i}M', w, h, columns(cols, mirror=True)))
-    turbo = columns(colours(cpc_pens(mem, 0x8FBD, 4, 16), inks))   # the icon (&2193), compiled by draw_turbos
+    assert len(sprites) == CAR_SPRITES
 
     # the stage's objects: side 0 right, 1 left; ids 0-9; sizes 1-10
-    files = read_dsk(os.path.join(os.path.dirname(__file__), '..', 'docs', 'chasehq.dsk'))
     st = Stage(mem, files[f'CHASEHQ.LV{stage}']['data'], inks)
     st.sprites = sprites
     kinds, lists, records = [], [], []
@@ -190,38 +189,96 @@ def main(out, stage=1):
     for k in range(2):
         desc = st.rw(obst + 3 * k + 1)
         cars += [st.sprite(desc + 5 * s, 'CarImg') for s in range(6)]
+    assert len(sprites) <= 256
+    return sprites, kinds, lists, records, cars
+
+
+def main(out):
+    os.makedirs(out, exist_ok=True)
+    m = CPC()
+    assert m.run_to(0x0300)
+    mem = bytes(m.mem)
+    inks = list(m.inks)
+    files = read_dsk(os.path.join(os.path.dirname(__file__), '..', 'docs', 'chasehq.dsk'))
+    turbo = columns(colours(cpc_pens(mem, 0x8FBD, 4, 16), inks))   # the icon (&2193), compiled by draw_turbos
+    per = {s: stage_sprites(s, files, mem, inks) for s in STAGES}
+    cars = per[1][0][:CAR_SPRITES]
+    for s in STAGES:
+        assert per[s][0][:CAR_SPRITES] == cars, f'stage {s}: the player\'s car differs'
+    most = max(len(per[s][0]) for s in STAGES)      # the tables' entries: the most sprites a stage has
+    var = {s: 3 * len(per[s][3]) + sum(len(x[3]) for x in per[s][0][CAR_SPRITES:]) for s in STAGES}
+    room = max(var.values())                        # the parts and the stage's own sprites
 
     with open(os.path.join(out, 'sprites.6502'), 'w') as f:
-        f.write('\\\\ sprites.6502 - made by tools/gensprites.py from the CPC disc: do not edit.\n\n')
-        for n, (name, w, h, data) in enumerate(sprites):
-            if name.startswith('Car') and not name.startswith('CarImg'):
-                f.write(f'Spr{name} = {n}\n')
-        f.write(f'SpriteCount = {len(sprites)}\n\n')
+        f.write('\\\\ sprites.6502 - made by tools/gensprites.py from the CPC disc: do not edit. The player\'s car,\n')
+        f.write('\\\\ then the stages\' slot at the bank\'s end, filled from spritestageN.6502 at a stage\'s start.\n\n')
+        for n, (name, w, h, data) in enumerate(cars):
+            f.write(f'Spr{name} = {n}\n')
+        f.write(f'SprTableSize = {most}                    ; the sprite tables\' entries: the most sprites a stage has\n\n')
         f.write('TurboIcon = {' + ', '.join(f'&{v:02X}' for v in turbo) + '}   ; 4 x 16, coded: draw_turbos compiles it\n\n')
-        assert len(sprites) <= 256
-        steps = [len(x[3]) // x[1] - 8 & 255 for x in sprites]   # a column's bytes less 8, signed
-        for lab, vals in (('SprW', [x[1] for x in sprites]), ('SprH', [x[2] for x in sprites]), ('SprStep', steps)):
-            for i in range(0, len(vals), 32):
-                f.write((f'.{lab}\n' if i == 0 else '') + '    EQUB ' + ', '.join(str(v) for v in vals[i:i + 32]) + '\n')
-        for lab, fn in (('SprLo', 'LO'), ('SprHi', 'HI')):         # each sprite's bytes, less 8
-            for i in range(0, len(sprites), 8):
-                f.write((f'.{lab}\n' if i == 0 else '') + '    EQUB ' + ', '.join(f'{fn}(SprData{x[0]} - 8)' for x in sprites[i:i + 8]) + '\n')
-        f.write('\n\\\\ the stage\'s roadside objects: kind by side * 10 + id (0 none, 1 raised, 2 on the ground, 3 parts,\n')
-        f.write('\\\\ 4 the gantry); part lists by (side * 10 + id) * 10 + size - 1\n\n')
-        f.write('.ObjKind\n    EQUB ' + ', '.join(str(k) for k in kinds) + '\n')
-        for lab, fn in (('ObjPartLo', 'LO'), ('ObjPartHi', 'HI')):
-            for i in range(0, len(lists), 10):
-                f.write((f'.{lab}\n' if i == 0 else '') + '    EQUB ' + ', '.join(f'{fn}(ObjParts + {3 * x})' for x in lists[i:i + 10]) + '\n')
-        f.write('.ObjParts                                   ; sprite, X offset (quarter-bytes), kind (1 the end)\n')
-        for i in range(0, len(records), 6):
-            f.write('    EQUB ' + ', '.join(f'{a}, {b}, {c}' for a, b, c in records[i:i + 6]) + '\n')
-        f.write('\n.CarSprite                                  ; the stage\'s cars (the criminal first), then its obstacles, by size 0-5\n')
-        f.write('    EQUB ' + ', '.join(str(c) for c in cars) + '\n\n')
-        for name, w, h, data in sprites:
+        for name, w, h, data in cars:
             f.write(f'.SprData{name}                                   ; {w} x {h}, a column at a time, top first\n')
             for i in range(0, len(data), 16):
                 f.write('    EQUB ' + ', '.join(f'&{v:02X}' for v in data[i:i + 16]) + '\n')
-    print(len(sprites), 'sprites,', sum(len(x[3]) for x in sprites), 'bytes,', len(records), 'part records')
+        slot = 5 * most + 20 + 2 * 200 + 42 + room
+        f.write('\n\\\\ the stage\'s slot (spritestageN.6502\'s Stage<n>Data, filled whole): SprW, SprH, SprStep (a column\'s\n')
+        f.write('\\\\ bytes less 8, signed), SprLo and SprHi (its bytes less 8) by sprite; its roadside objects\' kinds by\n')
+        f.write('\\\\ side * 10 + id (0 none, 1 raised, 2 on the ground, 3 parts, 4 the gantry); their part lists by\n')
+        f.write('\\\\ (side * 10 + id) * 10 + size - 1; its cars (the criminal first) then its obstacles, by size 0-5;\n')
+        f.write('\\\\ then its parts and its own sprites\n\n')
+        f.write(f'DataSlotBytes = {slot}\n')
+        f.write('    PADTO DataVarsOrg - DataSlotBytes\n')
+        for lab, n in (('SprW', most), ('SprH', most), ('SprStep', most), ('SprLo', most), ('SprHi', most),
+                       ('ObjKind', 20), ('ObjPartLo', 200), ('ObjPartHi', 200), ('CarSprite', 42),
+                       ('DataSlotParts', room)):
+            f.write(f'.{lab}\n    SKIP {n}\n')
+
+    for s in STAGES:
+        sprites, kinds, lists, records, carsp = per[s]
+        n = len(sprites)
+        pad = lambda vals, fill=0: vals + [fill] * (most - len(vals))
+        steps = [len(x[3]) // x[1] - 8 & 255 for x in sprites]   # a column's bytes less 8, signed
+        with open(os.path.join(out, f'spritestage{s}.6502'), 'w') as f:
+            f.write(f'\\\\ spritestage{s}.6502 - made by tools/gensprites.py: stage {s}\'s slot in the data\'s bank\n')
+            f.write('\\\\ (sprites.6502\'s), rephased to its place: its sprite tables, objects, cars, parts and sprites.\n\n')
+            f.write('{\n')
+            f.write(f'SECTION Stage{s}Data, org = SprW\n')
+            for lab, vals in (('SprW', [x[1] for x in sprites]), ('SprH', [x[2] for x in sprites]), ('SprStep', steps)):
+                vals = pad(vals)
+                f.write(f'    ASSERT P% == {lab}\n')
+                for i in range(0, len(vals), 32):
+                    f.write('    EQUB ' + ', '.join(str(v) for v in vals[i:i + 32]) + '\n')
+            for lab, fn in (('SprLo', 'LO'), ('SprHi', 'HI')):          # each sprite's bytes, less 8
+                f.write(f'    ASSERT P% == {lab}\n')
+                vals = [f'{fn}(SprData{x[0]} - 8)' for x in sprites] + ['0'] * (most - n)
+                for i in range(0, len(vals), 8):
+                    f.write('    EQUB ' + ', '.join(vals[i:i + 8]) + '\n')
+            f.write('    ASSERT P% == ObjKind\n')
+            f.write('    EQUB ' + ', '.join(str(k) for k in kinds) + '\n')
+            for lab, fn in (('ObjPartLo', 'LO'), ('ObjPartHi', 'HI')):
+                f.write(f'    ASSERT P% == {lab}\n')
+                for i in range(0, len(lists), 10):
+                    f.write('    EQUB ' + ', '.join(f'{fn}(ObjParts + {3 * x})' for x in lists[i:i + 10]) + '\n')
+            f.write('    ASSERT P% == CarSprite\n')
+            f.write('    EQUB ' + ', '.join(str(c) for c in carsp) + '\n')
+            f.write('    ASSERT P% == DataSlotParts\n')
+            f.write('.ObjParts                                   ; sprite, X offset (quarter-bytes), kind (1 the end)\n')
+            for i in range(0, len(records), 6):
+                f.write('    EQUB ' + ', '.join(f'{a}, {b}, {c}' for a, b, c in records[i:i + 6]) + '\n')
+            for name, w, h, data in sprites[CAR_SPRITES:]:
+                f.write(f'.SprData{name}                                   ; {w} x {h}, a column at a time, top first\n')
+                for i in range(0, len(data), 16):
+                    f.write('    EQUB ' + ', '.join(f'&{v:02X}' for v in data[i:i + 16]) + '\n')
+            f.write(f'    ASSERT P% <= DataSlotParts + {room}\n')
+            f.write('ENDSECTION\n}\n')
+    with open(os.path.join(out, 'spritepieces.6502'), 'w') as f:
+        f.write('\\\\ spritepieces.6502 - made by tools/gensprites.py: the piece a stage fills in the data\'s bank (its\n')
+        f.write('\\\\ slot, spritestageN.6502\'s): its address and bytes, then 0\n\n')
+        f.write('.SpritePieces\n')
+        f.write('    EQUW SprW, DataSlotBytes\n')
+        f.write('    EQUW 0\n')
+    print(f'sprites: {", ".join(str(len(per[s][0])) for s in STAGES)} a stage (tables of {most}); parts and own '
+          f'sprites {var} in {room}; the slot {5 * most + 20 + 400 + 42 + room} bytes')
 
 
 if __name__ == '__main__':

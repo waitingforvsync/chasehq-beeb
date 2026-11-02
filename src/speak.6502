@@ -26,15 +26,15 @@ SampleDelay = 12                        ; the delay loop's count: tuned in jsbee
     LDY bankstore
     TAX
     JSR wait_back                       ; (the playfield last drawn shown: back the hidden one)
-    LDA SpeechPackLo-1,X:STA storezx.src
-    LDA SpeechPackHi-1,X:STA storezx.src+1
-    LDA #0:STA storezx.dst:STA ptr
+    LDA SpeechPackLo-1,X:STA unzx.src
+    LDA SpeechPackHi-1,X:STA unzx.src+1
+    LDA #0:STA unzx.dst:STA ptr
     STA SkyTop:STA SkyOther             ; (neither playfield's sky known any more)
-    LDA back:STA storezx.dst+1:STA ptr+1
+    LDA back:STA unzx.dst+1:STA ptr+1
     LDA SpeechLenLo-1,X:STA left
     LDA SpeechLenHi-1,X:STA left+1
     STY &FE30                           ; ROMSEL: the store's bank
-    JSR storezx.unpack
+    JSR unzx.unpack
     LDA bankcode:STA &FE30              ; ROMSEL: the code's back
     LDA #&80:STA speaking
     LDA #&0B:STA &FE40                  ; addressable latch: the keyboard's auto-scan on (PA7 free)

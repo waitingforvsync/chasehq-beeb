@@ -1,4 +1,59 @@
-\\ stages.6502 - the stages' bank (the fourth): each stage's own data packed (decisions D17, P12), unpacked
-\\ over the slots at its start. Empty for now: !BOOT finds and loads it, so the game needs its 64K.
+\\ stages.6502 - the stages' bank (the fourth): each stage's own data packed (decisions D17, P12), a pack for each
+\\ part (the road's, the sprites', the text's), which stage_load unpacks at its start; the rest in the store's
+\\ bank (store.6502). stageload.6502's StagePackBank says which bank keeps which.
 
-    EQUB 0                              ; (a byte, so the file isn't empty)
+.Stage1RoadPack
+    SECTION Stage1RoadPacked, transform = "zx02"
+        INCLUDE "../build/gen/roadstage1.6502"
+    ENDSECTION
+
+.Stage1DataPack
+    SECTION Stage1DataPacked, transform = "zx02"
+        INCLUDE "../build/gen/spritestage1.6502"
+    ENDSECTION
+
+.Stage1TextPack
+    SECTION Stage1TextPacked, transform = "zx02"
+        INCLUDE "../build/gen/textstage1.6502"
+    ENDSECTION
+
+.Stage2RoadPack
+    SECTION Stage2RoadPacked, transform = "zx02"
+        INCLUDE "../build/gen/roadstage2.6502"
+    ENDSECTION
+
+.Stage2DataPack
+    SECTION Stage2DataPacked, transform = "zx02"
+        INCLUDE "../build/gen/spritestage2.6502"
+    ENDSECTION
+
+.Stage2TextPack
+    SECTION Stage2TextPacked, transform = "zx02"
+        INCLUDE "../build/gen/textstage2.6502"
+    ENDSECTION
+
+.Stage3RoadPack
+    SECTION Stage3RoadPacked, transform = "zx02"
+        INCLUDE "../build/gen/roadstage3.6502"
+    ENDSECTION
+
+.Stage3DataPack
+    SECTION Stage3DataPacked, transform = "zx02"
+        INCLUDE "../build/gen/spritestage3.6502"
+    ENDSECTION
+
+
+.Stage4RoadPack
+    SECTION Stage4RoadPacked, transform = "zx02"
+        INCLUDE "../build/gen/roadstage4.6502"
+    ENDSECTION
+
+.Stage4TextPack
+    SECTION Stage4TextPacked, transform = "zx02"
+        INCLUDE "../build/gen/textstage4.6502"
+    ENDSECTION
+
+.Stage5RoadPack
+    SECTION Stage5RoadPacked, transform = "zx02"
+        INCLUDE "../build/gen/roadstage5.6502"
+    ENDSECTION
