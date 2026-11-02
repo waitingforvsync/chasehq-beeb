@@ -17,7 +17,6 @@ SECTION CodeFile, filename = "CHASEC", load = &FFFF0000+BankLoad
         INCLUDE "turbos.6502"           ; the turbo icons, compiled
         INCLUDE "popup.6502"            ; the bonus popup
         INCLUDE "tunnel.6502"           ; the tunnel's state and mouth
-        INCLUDE "gantry.6502"           ; the gantry's beam
 
         \\ a stage's road pack in the code's free bytes (decisions D22): stage_load unpacks it from here
 
@@ -72,20 +71,21 @@ SECTION Chase2, org = LoadFloor, load = &FFFF0000+LoadFloor, exec = &FFFF0000+en
         PADTOLOW &FE                    ; (the objects' branches cross pages as they did in the data's bank)
         INCLUDE "objects.6502"          ; the roadside objects, with it paged in
         INCLUDE "sound.6502"            ; the SN76489, from the IRQ
-
-        \\ the decoder for what the store's and the stages' banks keep packed (unzx.unpack: the ZX02 stream at
-        \\ unzx.src, in the bank paged in, to unzx.dst in main RAM)
-
-.unzx
-{
-        INCLUDE "dzx02.6502"
-}
         INCLUDE "stageload.6502"        ; a stage's own data put in place
         INCLUDE "../build/gen/roadpieces.6502"  ; its pieces (tools/genroad.py, gensprites.py, gentext.py)
         INCLUDE "../build/gen/spritepieces.6502"
         INCLUDE "../build/gen/textpieces.6502"
 
-        PADTO NmiOrg
+        \\ the decoder for what the store's and the stages' banks keep packed (unzx.unpack: the ZX02 stream at
+        \\ unzx.src, in the bank paged in, to unzx.dst in main RAM): at the gap's top, its loops in one page
+
+        PADTO NmiOrg - (unzxend - unzx)
+.unzx
+{
+        INCLUDE "dzx02.6502"
+}
+.unzxend
+        ASSERT P% == NmiOrg AND HI(unzx) == HI(P% - 1), "the decoder in one page, under the RTI"
         RTI                             ; stray NMIs
 
         \\ the game's logic, in main RAM for now (the code's bank is full): it reads main RAM's variables and

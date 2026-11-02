@@ -204,6 +204,13 @@ though."
   and the player's code from main RAM. Packed, they fit HAZEL's 8K with room for the player; they unpack into
   the hidden playfield as now.
 
+### D24. The gantry's beam from main RAM, runner_row patched only for its columns (review P2) (2026-11-02)
+Offered the review's P2 (gantry_beam its own routine in main RAM, paging the code bank itself; runner_row
+entered at the beam's first column's patch, an RTS over its last's), as a trade: the beams 7,458 -> 6,280
+cycles a loop in stage 3 and 3,938 -> 3,430 in stage 5; the code bank 12 -> 100 free, the main RAM gap 354 ->
+237. Rich: "ok let's add p2". Not taken: P24 (the fills read from main RAM: 400 cycles more in stage 3 for 114
+more bytes of the gap). The decoder, which P2 pushed across &0B00, moved to the gap's top, under &D00.
+
 ---
 
 ## Proposed

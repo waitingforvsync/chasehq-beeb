@@ -914,3 +914,28 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   table pack). Beams: stage 3 -> 5,857, stage 5 -> 3,231. Code bank +89, main RAM -217, GameVars +36, data
   bank +114, stages' bank +2; stage_load +300 cycles.
 - dzx02 has no SAME_PAGE checks: it sits in one page by luck.
+
+### P2 merged (decisions D24); the decoder under &D00
+- P2 applied over P1 and P3 (its change from the review's P1 tree): gantry.6502 gone; gantry_beam its own
+  routine in objects.6502, in main RAM, with zero page locals, BeamBuf (32) in GameVars. It pages the code
+  bank itself, puts an RTS in the runner at column R's store and one in runner_row at R's patch (the byte
+  saved and put back), and enters runner_row at L's patch (at the ORA #1 from 32), so a row patches only the
+  beam's columns; the row's page kept with C set, a row up SBC #2.
+- P2 pushed the decoder across &0B00 (its BCC copy then crossing a page: a stage load 12,006 to 13,600
+  cycles slower). Moved to the top of the gap, ending at NmiOrg (PADTO NmiOrg - (unzxend - unzx), Baron
+  taking the forward reference), with an ASSERT that it's in one page: &0C7F-&0CFF. stage_load and the
+  pieces moved down 129 bytes; its BPL nextpart now crosses a page. stage_load by stage (py65): 807,833,
+  892,717, 806,353, 875,434, 893,337 -> each +4.
+- compare_gantry.py: gantry_beam found by either symbol. Stage 5: 39 loops, 28 differ, the same loops and
+  pixels as before; stage 3: 225, 74 differ, the same. The beams: stage 3 7,458 -> 6,280 cycles a loop (worst
+  10,929 -> 9,334); stage 5 3,938 -> 3,430 (worst 7,328 -> 6,499).
+- synth.py (seed 7, 20,000 made-up rows; stages 3 and 5 have the same gantry tables, so one set): 8,519 with
+  a beam, 0 differ from 69409dd, the runners restored in all; gantry_beam 2,601.7 -> 2,356.6 cycles a beam
+  drawn on average (-1,038 to +26).
+- bench.py against 8b9e03a: IDENTICAL in all seven runs. Whole loops against 69409dd (benchcyc.py): driving
+  -7.1 a loop on average (-41 to +29), time up -8.3, the window -3.5, the arrest +2.8 (to +49), pages +5.0:
+  the code after the gantry moved (the sprite plotter's and sound's page crossings).
+- Room: code bank 12 -> 100 free (and 5); the &259 gap 354 -> 237 (19, 46, 172: the last now under the
+  decoder, at &0BD3); GameVars 44 -> 48; data bank 338, store 172, stages' bank 796 as they were.
+- P2 moved sound.6502 up 117 bytes: its branches crossing pages changed (sound_frame's and set_tone's, in
+  the IRQ, instead of three others).

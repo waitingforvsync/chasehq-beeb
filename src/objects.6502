@@ -265,17 +265,38 @@
 .@
     JMP parted
 
-    \\ the gantry's beam (the CPC's &2474), after its pylon, drawn or not: across columns (XL + 8 - x) / 4 (0
-    \\ with the left edge off the left) to (XR + x) / 4 (64 off the right), x its pylon's at the size; its
-    \\ bottom line ya - 1.5 scale, mod 256 (the CPC's yb - (1.5 scale - (ya - yb))), none above the playfield;
-    \\ its size's lines, as far as the playfield's top, each its colour by the line's parity from the bottom
-    \\ up, into BeamBuf from the top: drawn in the code's bank, paged in for it (gantry_fill)
+}
+
+\\ The gantry's beam (the CPC's &2474), after its pylon, drawn or not: across columns (XL + 8 - x) / 4 (0 with
+\\ the left edge off the left) to (XR + x) / 4 (64 off the right), x its pylon's at the size; its bottom line
+\\ ya - 1.5 scale, mod 256 (the CPC's yb - (1.5 scale - (ya - yb))), none above the playfield; its size's
+\\ lines, as far as the playfield's top, each its colour by the line's parity from the bottom up. Its fills
+\\ into BeamBuf from the data's bank; then, with the code's paged in, each line by the row runner from its
+\\ first column's store to an RTS at its end's, a row's pages by runner_row from its first column's patch to an
+\\ RTS at its end's (from 32's, the ORA #1, for a beam from 33 on).
+\\
+\\ Inputs:
+\\     draw_objects.r: its row
+\\     back: the playfield; the data's bank paged in
+\\
+\\ Outputs:
+\\     the playfield; SkyTop lowered to the beam's top
+\\     A, X, Y: corrupted
 
 .gantry_beam
-    LDX r:CPX #10:BCC @+
+{
+    ZA_AUTO1 left                       ; local: its first column, 0-61
+    ZA_AUTO1 right                      ; local: the column past its last, 1-64; then 3 times it
+    ZA_AUTO1 bottom                     ; local: its bottom line, 0-127
+    ZA_AUTO1 lines                      ; local: its lines less 1
+    ZA_AUTO1 page                       ; local: the row's first page
+    ZA_AUTO1 stop                       ; local: runner_row's RTS's place in it
+    ZA_AUTO1 saved                      ; local: the byte the RTS is over
+
+    LDX draw_objects.r:CPX #10:BCC @+
     LDX #10                             ; X: its size
 .@
-    LDY r
+    LDY draw_objects.r
     LDA RowXLHi,Y:BMI zero              ; (the left edge off the left: from column 0)
     BNE beamless                        ; (off the right: none)
     LDA RowXLLo,Y:CLC:ADC #16           ; (its carry dropped, as the CPC's)
@@ -286,40 +307,92 @@
 .zero
     LDA #0
 .lefted
-    STA BeamLeft
+    STA left
     LDA RowXRHi,Y:BMI beamless          ; (the right edge off the left: none)
     BNE wide                            ; (off the right: to column 64)
     LDA RowXRLo,Y:CLC:ADC GantryX-1,X
     BCS wide                            ; (0 only with a carry: x 1 at least, gensprites')
     CMP #&F8:BCS wide
     LSR A:LSR A
-    CMP BeamLeft:BEQ beamless:BCS righted   ; (none if it ends where it starts: the CPC's run would go astray)
+    CMP left:BEQ beamless:BCS righted   ; (none if it ends where it starts: the CPC's run would go astray)
 .beamless
     RTS
 .wide
-    LDA #64                             ; (BeamLeft 61 at most)
+    LDA #64                             ; (left 61 at most)
 .righted
-    STA BeamRight
+    STA right
     LDA RowScale,Y:LSR A:CLC:ADC RowScale,Y ; 1.5 scale (93 at most: C clear)
     EOR #&FF:ADC #33                    ; 32 less it
     CLC:ADC RoadY,Y:BMI beamless        ; ya less it (above the playfield: none)
-    STA BeamBottom
+    STA bottom
     LSR A                               ; (C: its parity)
     LDA GantryAt-1,X:BCC @+
     ADC #GantryOdd-GantryEven-1         ; (C set: the odd bottom's)
 .@
     TAY
-    LDA BeamBottom
+    LDA bottom
     CMP GantryHeight-1,X:BCC lined      ; (as far as the playfield's top: the line its lines less 1)
     LDA GantryHeight-1,X                ; (its lines less 1 no more than the line: all of them)
 .lined
-    STA BeamLines
-    TAX                                 ; BeamBuf top first: the bottom line's fill at BeamLines
-.lines
+    STA lines
+    TAX                                 ; BeamBuf from the top: the bottom line's fill at its lines less 1
+    EOR #&FF:SEC:ADC bottom             ; its top line
+    CMP SkyTop:BCS copy
+    STA SkyTop
+.copy
     LDA GantryEven,Y:STA BeamBuf,X
-    INY:DEX:BPL lines
+    INY:DEX:BPL copy
+
+    \\ the code's bank: the runner's RTS at column R; runner_row's at R's patch (+ 2 from 33, past its
+    \\ ORA #1; its own at 64)
+
     LDX bankcode:STX &FE30              ; ROMSEL: the code's bank
-    JSR gantry_fill
+    LDA right:ASL A:ADC right           ; (C clear: 192 at most)
+    STA right:TAY
+    LDA #&60:STA Runner,Y               ; (RTS: the run's end)
+    TYA:CMP #3 * 33:BCC @+
+    ADC #1                              ; (C set: + 2)
+.@
+    ADC #6:STA stop:TAY                 ; (C clear)
+    LDA runner_row,Y:STA saved
+    LDA #&60:STA runner_row,Y           ; (RTS: the patches' end)
+
+    \\ both entered at column L: runner_row at its patch (32's, the ORA #1, from 33, with the page as at 32)
+
+    ASSERT HI(runner_row + 6) == HI(runner_row + 6 + 3 * 32), "runner_row's first half's patches in a page"
+    LDA left:ASL A:ADC left             ; (C clear)
+    TAX
+    ADC #LO(Runner):STA go+1            ; (C clear)
+    TXA:CMP #3 * 32:BCC @+
+    LDA #3 * 32 - 1                     ; (C set)
+.@
+    ADC #LO(runner_row + 6):STA rrgo+1
+
+    \\ each line from the bottom up: Y its index in BeamBuf, X its line in its row
+
+    LDA bottom:AND #7:TAX
+    LDY lines
+    LDA bottom:LSR A:LSR A:AND #&FE:ORA back    ; the bottom row's first page
+    SEC                                 ; (kept: the rows' pages less 2)
+.row
+    STA page
+.rrgo
+    JSR runner_row + 6                  ; self-modified: column L's patch
+    ZA_CANCALL runner_row
+.lineloop
+    LDA BeamBuf,Y
+.go
+    JSR Runner                          ; self-modified: column L's store
+    ZA_CANCALL Runner
+    DEY:BMI done
+    DEX:BPL lineloop
+    SAME_PAGE lineloop
+    LDX #7                              ; (a new row)
+    LDA page:SBC #2                     ; (C set: the row above's first page)
+    BCS row                             ; always
+.done
+    LDY right:LDA #&9D:STA Runner,Y     ; (STA abs,X back)
+    LDY stop:LDA saved:STA runner_row,Y
     LDX bankdata:STX &FE30              ; ROMSEL: the data's back
     RTS
 }
@@ -397,6 +470,8 @@ ZA_AUTO1 carslot                        ; local to draw_objects: the slot being 
     EQUB HI(tile_height.k075), HI(tile_height.k025), HI(tile_height.k1), HI(tile_height.k2)
 
 SECTION GameVars
+.BeamBuf                                ; gantry_beam's: each line's fill, from the top
+    SKIP 32
 .RowYB                                  ; each row's line for its objects (crests in front), rows 1-21
     SKIP 22
 .RowCars                                ; each row's cars, slot k at bit k + 2 (clear but in draw_objects:

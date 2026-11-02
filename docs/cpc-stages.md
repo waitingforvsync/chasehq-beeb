@@ -55,8 +55,8 @@ lines. Only stage 3 has none.
   two-lane roads, three lanes on the right, and tapers on the right or into two lanes. The BBC's road model
   handles them (below).
 - **S4, S5 objects**: id 2 in stages 3 and 5. On the left (S5) it's kind 4, **the gantry** (drawn since
-  2026-11-02, `gantry.6502`); on the right (S4), an ordinary composite. Stage 3's right id 8 has the gantry's
-  handler too, but S4 never places it.
+  2026-11-02, `objects.6502`'s gantry_beam); on the right (S4), an ordinary composite. Stage 3's right id 8
+  has the gantry's handler too, but S4 never places it.
 - **S6 codes**: 4 and 5 (obstacle values 1 and 2: one cone or barrier at `&32` or `&DC`, handled by
   `obstacles`), 11 (the criminal takes the left branch, stages 2 and 3: handled), and 15, 17, 18 (stages 2 and
   4): `&1759`, the airborne patrol, below. The BBC decodes all of them (`next_s6`); nothing reads
@@ -145,7 +145,7 @@ the stage by test mode's key '2'), 600 loops each branch:
 
 1. A load per stage: done (D17, D20: every stage packed, `stage_load`).
 2. The airborne patrol: done (`airborne.6502`; its images kept once for both stages, both frames, D21).
-3. The gantry (3 and 5): done (`objects.6502`'s gantry_beam, `gantry.6502`).
+3. The gantry (3 and 5): done (`objects.6502`'s gantry_beam).
 4. The ram's score by stage: done.
 5. The `road_lines` fix for C = -128: done. The row 20 anchor: to do.
 6. Shared with stage 1: the tunnel (renderer, mouth, walls, sound): done.

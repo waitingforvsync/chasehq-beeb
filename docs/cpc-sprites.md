@@ -355,7 +355,7 @@ line is `yb - 1.5·scale + hidden` and it has the per-size height from the descr
 byte (from a list, so the bar has coloured stripes) by an opaque unrolled run of `LD (HL),A : INC L` entered
 part-way: 11 T a byte.
 
-In detail (2026-11-02, from the code; the BBC's `gantry_beam` and `gantry_fill`):
+In detail (2026-11-02, from the code; the BBC's `gantry_beam`):
 
 - The object pass calls left id 2's handler even when `XL_hi` isn't 0 (`&2446`); every other left object, and
   every right one, only when it is. Left id 2 is the gantry in stages 3 and 5 and appears in no other stage.
