@@ -40,6 +40,7 @@ SECTION DataFile, filename = "CHASED", load = &FFFF0000+BankLoad
     SECTION SwramData, org = SwramOrg, guard = DataVarsOrg, transform = "zx02"
         INCLUDE "sprites.6502"          ; the plotter
         INCLUDE "../build/gen/sprites.6502" ; and the sprites (tools/gensprites.py)
+        INCLUDE "../build/gen/spriteslot.6502"  ; the stage's slot, at the bank's end
     ENDSECTION
 ENDSECTION
 
@@ -87,6 +88,7 @@ SECTION Chase2, org = LoadFloor, load = &FFFF0000+LoadFloor, exec = &FFFF0000+en
         INCLUDE "traffic.6502"          ; the traffic
         INCLUDE "panel.6502"            ; the dashboard's figures
         INCLUDE "flow.6502"             ; the clock, the score and the stage's course
+        INCLUDE "airborne.6502"         ; the airborne patrol's helicopter (stages 2 and 4)
     ENDSECTION
 
 .panel_image

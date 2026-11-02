@@ -1,0 +1,202 @@
+\\ airborne.6502 - the airborne patrol's helicopter, stages 2 and 4 (docs/cpc-stages.md, the CPC's &31AC-&3304):
+\\ flown in with the message of which way the criminal turned, hovering, then away to the left. Its state is
+\\ RoadHints' first byte (the CPC's &1759), which S6's codes 15, 17 and 18 set to 1, 3 and 4.
+
+SECTION GameVars
+.AirX                                   ; its x, quarter-bytes, signed (the CPC's &3202)
+    SKIP 2
+.AirTarget                              ; where it's heading: &70, or -56 to go (&3272)
+    SKIP 2
+.AirRoadX                               ; the road's X last loop (&3262)
+    SKIP 2
+.AirY                                   ; its height: &85 down to &61 (&3237)
+    SKIP 1
+.AirPhase                               ; the bob's phase, 0-3 (&3243)
+    SKIP 1
+.AirStep                                ; its step, +1 or -1, turned over at phase 0 (&324B)
+    SKIP 1
+.AirBob                                 ; the bob (&3254)
+    SKIP 1
+.AirLine                                ; the height drawn at: AirY + AirBob (&31CF)
+    SKIP 1
+ENDSECTION
+
+\\ Its state each loop (the CPC's &329E), after the traffic's spawn: codes 17 and 18 (3, 4) its message and
+\\ it flying in (5); 15 (1) away (2); away and off the left, gone (0).
+\\
+\\ Inputs:
+\\     RoadHints, RoadX
+\\
+\\ Outputs:
+\\     RoadHints, its variables; the message
+\\     A, X, Y: corrupted
+
+.air_step
+{
+    LDA RoadHints:BEQ done
+    CMP #1:BEQ away
+    CMP #2:BEQ going
+    CMP #5:BCS done                     ; (5: flying; the CPC leaves anything else as it is)
+    LDX #LO(MsgAirLeft):LDY #HI(MsgAirLeft)
+    CMP #3:BEQ @+
+    LDX #LO(MsgAirRight):LDY #HI(MsgAirRight)
+.@
+    LDA #MsgAirLeftPrio:JSR msg_request
+    ASSERT MsgAirRightPrio == MsgAirLeftPrio
+    LDA RoadX:STA AirRoadX
+    LDA RoadX+1:STA AirRoadX+1
+    LDA #LO(-24):STA AirX
+    LDA #HI(-24):STA AirX+1
+    LDA #&70:STA AirTarget
+    LDA #0:STA AirTarget+1
+    STA AirPhase:STA AirBob
+    LDA #1:STA AirStep
+    LDA #&85:STA AirY
+    LDA #5:STA RoadHints
+.done
+    RTS
+.away
+    LDA #LO(-56):STA AirTarget
+    LDA #HI(-56):STA AirTarget+1
+    LDA #2:STA RoadHints
+    RTS
+.going
+    LDA AirX+1:BEQ done                 ; (on the screen yet)
+    LDA #0:STA RoadHints
+    RTS
+}
+
+\\ Its movement each loop (the CPC's &3231), after the cars are projected: down 2 to &61; the bob, its step
+\\ turned over each time its phase comes round to 0; its x moved with the road's X, then 8 towards its target,
+\\ stopping on it.
+\\
+\\ Inputs:
+\\     RoadHints, RoadX, its variables
+\\
+\\ Outputs:
+\\     its variables
+\\     A, X, Y: corrupted
+
+.air_move
+{
+    ZA_AUTO2 diff                       ; local: its x less the target
+
+    LDA RoadHints:BNE @+
+    RTS                                 ; (none)
+.@
+    LDA AirY:CMP #&61:BEQ @+
+    SEC:SBC #2:STA AirY
+.@
+    LDA AirPhase:CLC:ADC #1:AND #3:STA AirPhase
+    BNE @+
+    LDA #0:SEC:SBC AirStep:STA AirStep
+.@
+    LDA AirBob:CLC:ADC AirStep:STA AirBob
+    CLC:ADC AirY:STA AirLine
+
+    LDA RoadX:SEC:SBC AirRoadX:TAX      ; the road's move
+    LDA RoadX+1:SBC AirRoadX+1:TAY
+    LDA RoadX:STA AirRoadX
+    LDA RoadX+1:STA AirRoadX+1
+    TXA:CLC:ADC AirX:STA AirX
+    TYA:ADC AirX+1:STA AirX+1
+    LDA AirX:SEC:SBC AirTarget:STA diff
+    LDA AirX+1:SBC AirTarget+1:STA diff+1
+    ORA diff:BEQ done                   ; (on the target)
+    LDX #8:LDY #0
+    LDA diff+1:BMI @+                   ; (short of it: on 8)
+    LDX #LO(-8):LDY #HI(-8)             ; (past it: back 8)
+.@
+    TXA:CLC:ADC AirX:STA AirX
+    TYA:ADC AirX+1:STA AirX+1
+    LDA AirX:CMP AirTarget              ; the new difference's sign
+    LDA AirX+1:SBC AirTarget+1
+    EOR diff+1:BPL done                 ; (the same side: not past it)
+    LDA AirTarget:STA AirX              ; (past it: on it)
+    LDA AirTarget+1:STA AirX+1
+.done
+    RTS
+}
+
+\\ Drawn among row 3's objects, after its cars (the CPC's &31AC, from its object pass's hook at &23C8): the
+\\ helicopter at x, AirLine up from the playfield's line 128 (hgt[3] - AirLine from row 3's line); its shadow
+\\ at x + 8 on the road, row 3's span to row 4 times the fraction's top three bits / 8 up from row 3's line.
+\\ Odd loops' frame its images mirrored. Each placed as the CPC's drawer does (&276C): behind a crest its
+\\ hidden rows skipped, above the playfield not drawn, no higher than its top.
+\\
+\\ Inputs:
+\\     its variables; RoadY, RowYB, RoadFrac; HeliSprite, the frame (TurboBlink); the data's bank paged in
+\\
+\\ Outputs:
+\\     the playfield
+\\     A, X, Y: corrupted
+
+.air_draw
+{
+    ZA_AUTO1 sprite                     ; local: the part's sprite
+    ZA_AUTO1 lift                       ; local: the part's height above row 3's line
+    ZA_AUTO1 ya, yb                     ; local: row 3's line, and its line for its objects (a crest's)
+    ZA_AUTO1 span                       ; local: row 3's lines to row 4's
+
+    LDA RoadY+3:CLC:ADC #32:STA ya
+    LDA RowYB+3:STA yb
+    LDA RoadY+3:SEC:SBC RoadY+4:STA span
+    LDA TurboBlink:ASL A:ADC HeliSprite:STA sprite  ; (C clear) the frame's first part
+
+    \\ the helicopter: lift AirLine - hgt[3], hgt[3] = 96 - RoadY[3]
+
+    LDA RoadY+3:CLC:ADC AirLine
+    SEC:SBC #96:STA lift
+    LDX AirX:LDA AirX+1:JSR part
+
+    \\ its shadow: lift (span * the fraction's top three bits) / 8, 11 bits of product
+
+    INC sprite
+    LDA #0:STA lift
+    LDA RoadFrac:LSR A:LSR A:LSR A:LSR A:LSR A:TAY  ; the top three bits
+    LDA #0
+    BEQ count                           ; always
+.times
+    CLC:ADC span
+    BCC count
+    INC lift                            ; (the product's high byte, for now)
+.count
+    DEY:BPL times
+    ASL A:ROL lift:ASL A:ROL lift:ASL A:ROL lift
+    ASL A:ROL lift:ASL A:ROL lift       ; (the product * 32, high byte: / 8)
+    LDA AirX:CLC:ADC #8:TAX
+    LDA AirX+1:ADC #0                   ; (on into part)
+
+    \\ a part: X, A its x, quarter-bytes; lift its height; as the CPC's drawer
+
+.part
+    TAY                                 ; its column: x / 4 (floor), 0-63, or less than 0 to clip
+    TXA:LSR A:LSR A
+    CPY #0:BEQ placed                   ; (0-255: columns 0-63)
+    INY:BNE gone                        ; (256 on, or below -256: not on the screen)
+    ORA #&C0                            ; (-256 to -1: columns -64 to -1, sprite_draw clips them)
+.placed
+    STA sprite_draw.col
+    LDA ya:SEC:SBC yb                   ; the crest's rows, less the lift: n
+    SEC:SBC lift
+    BEQ unskipped:BMI unskipped
+    STA sprite_draw.skip                ; (n rows hidden: on the crest's line)
+    LDA yb:STA sprite_draw.bottom
+    JMP lines
+.unskipped
+    LDA #0:STA sprite_draw.skip
+    LDA yb:SEC:SBC lift                 ; its line
+    BMI gone                            ; (above the playfield)
+    STA sprite_draw.bottom
+.lines
+    LDX sprite:LDA SprH,X
+    SEC:SBC sprite_draw.skip
+    BEQ gone:BCC gone                   ; (all of it hidden)
+    STA sprite_draw.lines
+    LDA sprite_draw.bottom:CMP sprite_draw.lines:BCS @+
+    ADC #1:STA sprite_draw.lines        ; (C clear) the rows to the playfield's top
+.@
+    TXA:JMP sprite_draw
+.gone
+    RTS
+}

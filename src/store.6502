@@ -14,16 +14,10 @@
 
 \\ the stages' packs the stages' bank hasn't room for (stageload.6502's StagePackBank)
 
-.Stage4DataPack
-    SECTION Stage4DataPacked, transform = "zx02"
-        INCLUDE "../build/gen/spritestage4.6502"
-    ENDSECTION
+    INCLUDE "../build/gen/spritestage4.6502"  ; (Stage4Sprites.DataPack and .PartsPack)
 
 
-.Stage5DataPack
-    SECTION Stage5DataPacked, transform = "zx02"
-        INCLUDE "../build/gen/spritestage5.6502"
-    ENDSECTION
+    INCLUDE "../build/gen/spritestage5.6502"  ; (Stage5Sprites.DataPack and .PartsPack)
 
 .Stage5TextPack
     SECTION Stage5TextPacked, transform = "zx02"
@@ -34,3 +28,5 @@
     SECTION Stage3TextPacked, transform = "zx02"
         INCLUDE "../build/gen/textstage3.6502"
     ENDSECTION
+
+    INCLUDE "../build/gen/heli.6502"    ; the helicopter's sprites (HeliPack), for stages 2 and 4

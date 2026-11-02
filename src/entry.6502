@@ -232,7 +232,7 @@ ENDIF
     ASL A:STA OrTab+8,X
     DEX:BPL masks
 
-    \\ draw_objects' RowCars clear, in the data's bank too (it leaves it so each frame)
+    \\ draw_objects' RowCars clear (it leaves it so each frame)
 
     LDA #0
     LDX #20

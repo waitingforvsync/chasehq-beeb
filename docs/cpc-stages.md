@@ -63,19 +63,41 @@ lines. Only stage 3 has none.
 
 ## The airborne patrol (stages 2 and 4)
 
-`&329E`, each loop, by `&1759` (code − 14):
-- **3 or 4** (codes 17, 18): the message `&1A14` or `&1A24` (THE TARGET VEHICLE HAS TURNED LEFT / RIGHT UP
-  AHEAD), and `CALL &31AC` patched into the sprite drawer at `&23C8`. The helicopter comes in from X = -24
-  towards `&70`, bobbing (`&3243` cycles 0-3, `&324B` ±1); `&3237` counts `&85` down by 2 to `&61`. Then
-  `&1759` = 5.
-- **1** (code 15): it heads off to -56 (`&3272` = `&FFC8`), state 2; **2**: when its X's high byte is 0
-  again, the patch is taken out (`NOP`s at `&23C8`) and `&1759` = 0.
-- `&31AC` draws it when the drawer's row count reaches 3 (`LD A,B:CP 3`): two parts from the frame list at `(&5BDE)`, or `(&5BE0)` on
-  odd loops (`&1769` bit 0), each an x offset and a 5-byte header. Part one 14 bytes by 44 lines (the
-  helicopter from behind, its rotor blurred: `work/lv/stage2_air.png`), part two 10 by 10 at x + 8 (dark: its
-  shadow). The second frame is the first mirrored. LV2's at `&6B22`, LV4's at `&6A5E`; 716 bytes of images
-  each. The pointers are 0 and `&000C` in LV1, LV3 and LV5.
-- Code: `&31AC`-`&3304`, about 340 bytes of Z80.
+Decoded from `&31AC`-`&3304` (2026-11-02). Its state is `&1759`, set by S6 codes 15, 17 and 18 (code - 14).
+Its own variables are operands it patches into itself: X at `&3202` (a word, signed), the target X at
+`&3272`, Y at `&3237`, the bob's phase at `&3243`, step at `&324B` and offset at `&3254`, the road X last
+loop at `&3262`, and the line it's drawn on at `&31CF`.
+
+- **The state each loop** (`&329E`):
+  - 3 or 4 (codes 17, 18): the message `&1A14` (THE TARGET VEHICLE HAS TURNED LEFT UP AHEAD) or `&1A24`
+    (... RIGHT ...) at priority 15; X = -24, the target &70; Y = &85; the bob's phase and offset 0, its step
+    +1; the road X taken; `CALL &31AC` patched in at `&23C8` (the drawer's per-row hook); state 5.
+  - 5: nothing (flying in, then hovering).
+  - 1 (code 15): the target -56 (`&FFC8`); state 2.
+  - 2: once X's high byte isn't 0 (off the left), the patch taken out (three NOPs) and state 0.
+- **The movement each loop** (`&3231`, while the state isn't 0):
+  - Y: down 2 a loop from &85 to &61, then held.
+  - The bob: the phase counts 0-3, and the step (+1 or -1) turns over when it comes back to 0; the offset
+    adds the step each loop. The line it's drawn at is Y + the offset.
+  - X: moved by the road X's change since last loop (so it keeps its place over the ground), then 8 a loop
+    towards the target, stopping on it.
+- **The drawing** (`&31AC`, from the drawer's hook, only when its row count B is 3: so among row 3's
+  objects):
+  - The frame list at `(&5BDE)`, or `(&5BE0)` on odd loops (`&1769` bit 0). Each lists two parts: an x
+    offset (a signed byte) and a 5-byte sprite header (width, flags, height, data).
+  - Part one, the helicopter, 14 bytes by 44 lines at x + 0; part two, its shadow, 10 by 10 at x + 8. Each
+    is drawn by `&3201` with the drawer's y (`&276D`) set to minus a value: for part one Y + the bob's offset
+    less `(IY+&4B)`; for part two `(IY+&4C) - (IY+&4B)` times the fraction's top three bits (`&1774` AND
+    `&E0`) / 256 (a shift-and-add, then RRA). `(IY+&4B)` and `(IY+&4C)` are row 3's entries in the drawer's
+    row data; what `&276D` is relative to, and so the lines on the screen, is still to check against the
+    drawer (`&2703`).
+  - The odd loops' frame is the same images with the header's flag bit 0 set: mirrored. The helicopter
+    isn't symmetric (15 of its 44 rows), so the mirror flips its rotor's blur each loop.
+  - Clipping (`&3201`): a part entirely off the left (x + width x 4 not past 0) or with x past 255 isn't
+    drawn; the drawer's `&2703` (and `&274B` for x at or past &80) clip it otherwise.
+- **The images**: LV2's (`&6B42`, `&6DAA`) and LV4's (`&6A7E`, `&6CE6`) are the same bytes, 616 + 100 = 716.
+  The pointers are 0 and `&000C` in LV1, LV3 and LV5. On the BBC, with its plotter's coded bytes, each frame
+  is 716 bytes; the mirrored frame another 716 unless the plotter draws mirrored.
 
 ## The road model against the CPC's, stages 2-5
 
@@ -93,7 +115,7 @@ the stage by test mode's key '2'), 600 loops each branch:
   (-22 lines at b = 11: y = -11 where the CPC has 11). The CPC builds the product by shifting |C| left
   through A, and its first `ADD A,A` (`&52AA`) drops bit 7 unused: it multiplies by |C| mod 128, so -128 adds
   nothing. Fix: `AND #&7F` on the magnitude (2 bytes, 2 cycles, on the negative path). Stage 1's hills never
-  sum to -128. Not applied yet.
+  sum to -128. Applied (2026-11-02): stage 2's road now matches in all 600 loops.
 - **The rows' anchors**: row 20's left anchor is one more than the CPC's in some loops (stage 2: 6 and 6
   loops, 3: 47 and 19, 4: 3 and 0, 5: 35 and 5; stage 1: 0). Not found yet.
 - **The bounces**: one each, all on right branches, which run into tunnels soon after the fork (the CPC's
@@ -109,9 +131,10 @@ the stage by test mode's key '2'), 600 loops each branch:
   roadside bounds (`&5BD0`, `&5BD6`), the obstacles' table (`&5BCC`), the cars (`&5BE6`, `&5BE8`), the
   traffic gap (`&5BF0`: 20, 15, 15, 10, 20), the dodge and sprint counts (`&5BF1`: 80, 50, 70, 40, 40;
   `&5BF2`: 90, 40, 85, 30, 40), the face (`&5BCA`), the briefing (`&5BDA`) and the arrest page (`&5BDC`).
-- Not read yet: the tunnel's road colours (`&5BC7`) and the helicopter's frames (`&5BDE`, `&5BE0`).
+- Read since: the tunnel's road colours (`&5BC7`, genroad's FillTunnel) and the helicopter's frames (`&5BDE`,
+  `&5BE0`, gensprites' HeliSprite).
 - The code's reads of the stage number (`&164D`): the ram's score at `&3015` (stage × 10,000, stage + 4
-  for a double), which `car.6502` has at stage 1's (10,000 and 50,000); the fork's (`&4077`) and the
+  for a double), which `car.6502` now takes from `Stage` too; the fork's (`&4077`) and the
   bonuses (`&1018`), which the BBC takes from `Stage`; the intro's car reveal, skipped on stage 5
   (`&05A0`); `&21A7`'s copy to `&1758`; the stage's load (`&0C40`) and the flow (`&0327`, `&0331`,
   `&03C2`, `&0FAB`).
@@ -119,9 +142,9 @@ the stage by test mode's key '2'), 600 loops each branch:
 
 ## What the later stages need that stage 1 doesn't
 
-1. A load per stage, into slots of 2,349 (code bank), 7,806 (data bank) and 727 (main RAM).
-2. The airborne patrol: the mover and drawer (about 340 Z80 bytes) and 716 bytes of images a stage (2 and 4).
-3. The gantry (3 and 5).
-4. The ram's score by stage.
-5. The `road_lines` fix for C = -128, and the row 20 anchor.
-6. Shared with stage 1: the tunnel (renderer, mouth, walls, sound), which stage 1 itself needs.
+1. A load per stage: done (D17, D20: every stage packed, `stage_load`).
+2. The airborne patrol: done (`airborne.6502`; its images kept once for both stages, both frames, D21).
+3. The gantry (3 and 5): to do.
+4. The ram's score by stage: done.
+5. The `road_lines` fix for C = -128: done. The row 20 anchor: to do.
+6. Shared with stage 1: the tunnel (renderer, mouth, walls, sound): done.

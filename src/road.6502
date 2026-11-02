@@ -794,6 +794,7 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
 
     LDA c:BPL @+
     EOR #&FF:CLC:ADC #1
+    AND #&7F                            ; (|c| mod 128, as the CPC's multiply: -128 adds nothing)
 .@
     STA mag
     CLC:ADC b:TAY                       ; b + |c|, at most 224

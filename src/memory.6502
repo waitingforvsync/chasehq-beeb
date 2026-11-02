@@ -43,8 +43,7 @@ CodeDataOrg = &A55F                     ; the code's bank's data (gen.6502, road
                                         ; change to the code moves no table, nor its page crossings
 CodeVarsOrg = &B500                     ; the code's bank's own workspace (CodeVars): the loader's tables,
                                         ; the lane tables
-DataVarsOrg = &BFCB                     ; the data's bank's (DataVars): draw_objects' RowCars, the
-                                        ; sprites' mask tables
+DataVarsOrg = &BFE0                     ; the data's bank's (DataVars): the sprites' mask tables
 
 ASSERT PanelAddr + PanelRows * RowBytes == PlayAddrA, "the panel ends where playfield A starts"
 ASSERT PlayAddrA + PlayBytes == PlayAddrB AND PlayAddrB + PlayBytes == &8000, "the playfields fill to &8000"

@@ -165,6 +165,23 @@ unpacked at a game's start like any other, the game moving on after the bonus), 
   and copies its pieces up. The stage's four constants are bytes in the code bank, read where they were
   immediates.
 
+### D21. Mirrored sprites stay stored twice; the helicopter's mirrored frame stored too (2026-11-02; was P13)
+Rich asked to measure a mirrored path in the plotter first: "If the Mirrored path is sufficiently fast, could it
+be used to plot other mirrored sprites which are possibly currently handled by duplicaitng the sprite data
+mirrored, and thus save some memory?" Measured (py65): exact (the car's 9 body frames, and 99 clipped
+placements, the same bytes as its stored mirrored frames), at 30-38% more a sprite (6 cycles a byte): the car
++2,400-2,900 for its body and +1,400 for its wheels, 4,100 a loop while turned left. Rich: "it sounds as if in
+the general case it's not worth dynamically mirroring at draw time, so we'll keep the mirrored sprite data. In
+the case of the helicopter, since it's a one off, every other frame, maybe we can take it. Though if it costs
+nearly as much in mirroring sprite code and possibly tables, maybe we should just add the extra mirrored
+sprite frames." The path's code and tables come to about 660 bytes (its page 227, its set-up about 110, the
+table 256 and its alignment, a stub), against 716 for the frame: the frame is stored.
+- Rich then asked whether a palette switch could do the rotor ("common pixels in black, and pixels on one frame
+  or the other in an unused colour"). Measured: the frames differ only in the blades (pens 1 and 15), but pen
+  15 is a dithered pair, so about 10 switched colours (2 with its grey drawn black), and only over plain sky.
+  Offered that or both frames stored, he chose "Store both frames": the sprite slot (8,450 bytes) then packs in
+  two, its tables and its parts, each under a playfield.
+
 ---
 
 ## Proposed

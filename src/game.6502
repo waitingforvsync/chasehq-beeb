@@ -57,6 +57,7 @@ ENDSECTION
 .run
     JSR road_advance
     JSR traffic_update
+    JSR air_step                        ; (the helicopter's state, after the spawn: the CPC's &329E)
     JSR crim_update
     JSR read_keys
     LDX FlowState:BEQ keyed
@@ -78,6 +79,7 @@ ENDSECTION
     JSR sound_update
     JSR road_frame
     JSR traffic_project
+    JSR air_move                        ; (after the cars' projection: the CPC's &3231)
     JSR car_collide
     JSR wait_back                       ; (the old playfield free: the IRQ's flipped back to it)
     JSR road_draw

@@ -83,8 +83,9 @@
     LDA yb:STA RowYB,X
     INX:CPX #22:BNE crest               ; (row 21's for the tunnel's mouth)
 
-    \\ the tunnel's mouth: beyond the rows, now; or bit 1 of its row's RowCars, out of the cars' ASLs after
-    \\ theirs (row 0's, for none or once drawn, never read); rows 22 and 23 never (a hidden entrance's)
+    \\ the tunnel's mouth: beyond the rows, now; or bit 0 of its row's RowCars, out of the cars' ASLs after
+    \\ theirs (row 0's, for none or once drawn, never read); rows 22 and 23 never (a hidden entrance's). The
+    \\ helicopter, flying: bit 1 of row 3's, after its cars and before a mouth (the CPC's hooks at &23C8, &23CB)
 
     LDY MouthRow
     CPY #21:BCC mark
@@ -92,8 +93,11 @@
     LDA RowYB+21:JSR draw_mouth
     LDY #0
 .mark
-    LDA #2:STA RowCars,Y                ; (rows 1-20 clear till the slots' bits go in)
+    LDA #1:STA RowCars,Y                ; (rows 1-20 clear till the slots' bits go in)
 .marked
+    LDA RoadHints:BEQ @+                ; (the helicopter's state: 0 gone)
+    LDA RowCars+3:ORA #2:STA RowCars+3
+.@
 
     \\ RowCars: each row's cars, slot k at bit k + 2 (slot 5 out of an ASL first); each row's left clear for
     \\ the next frame
@@ -108,20 +112,24 @@
     LDA RoadSeg:CLC:ADC #WinObjects+19:STA win      ; (mod 256, the window a ring: a carry into the row
     LDA #20:STA r                                   ; would read the next one, as it once did)
 .row
-    LDY r:LDA RowCars,Y:BEQ objects     ; the cars on the row first, slot 5 down, then the mouth
+    LDY r:LDA RowCars,Y:BEQ objects     ; the cars on the row first, slot 5 down, then the helicopter, the mouth
     STA cars
     LDA #0:STA RowCars,Y
     LDX #MaxObjects-1
 .car
-    ASL cars:BCC @+
-    TXA:BMI mouth                       ; (bit 1: the mouth, after the row's cars)
+    ASL cars:BCC next
+    TXA:BMI special
     STX carslot
     JSR one_car
     LDX carslot
-.@
+.next
     DEX
     LDA cars:BNE car
     BEQ objects                         ; always
+.special
+    CPX #&FF:BNE mouth                  ; (bit 0: the mouth)
+    JSR air_draw                        ; (bit 1: the helicopter)
+    LDX #&FF:BNE next                   ; always
 .mouth
     LDY r:LDA RowYB,Y:JSR draw_mouth    ; (over the row's cars and what's beyond, under its objects)
 .objects
@@ -329,6 +337,8 @@ ZA_AUTO1 carslot                        ; local to draw_objects: the slot being 
 SECTION GameVars
 .RowYB                                  ; each row's line for its objects (crests in front), rows 1-21
     SKIP 22
+.RowCars                                ; each row's cars, slot k at bit k + 2 (clear but in draw_objects:
+    SKIP 21                             ; make_tables clears it)
 ENDSECTION
 
 .SlotBit                                ; slot k's bit in RowCars

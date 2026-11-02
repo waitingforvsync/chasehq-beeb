@@ -793,3 +793,49 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   anchor, both still open.
 - Tools: `tools/machine.py` loads a stage itself (stage 1 unless given), so check_road, compare_road and
   compare_tunnel need no change; `work/text/bbc_text.py` no longer pokes &02 (now bankstore).
+
+### Two stage fixes: the -128 gradient, the ram's score
+- road_lines takes |C| mod 128 (`AND #&7F` on the negative path), as the CPC's multiply does: a summed
+  gradient of -128 adds nothing. check_road.py stage 2: 2 -> 0 of 600 loops differ (the anchors still in 6);
+  stage 1 0 of 960 as before.
+- A ram scores the stage x 10,000 (a double (the stage + 4) x 10,000), from Stage, not stage 1's.
+- bench.py against cacd5a6: IDENTICAL in all seven runs; +6 to +15 cycles a loop (the AND on negative sums,
+  and the code after it 2 bytes on).
+- The helicopter decoded (docs/cpc-stages.md, the airborne patrol): its states, movement and drawing. Its
+  images are the same bytes in stages 2 and 4; its odd loops' frame is them mirrored. Measured for P13: the
+  mirrored sprites stored twice now are the player's car's 3,689 bytes and each stage's mirrored objects
+  whose plain twin is stored too (788, 551, 0, 651, 688 bytes for stages 1-5).
+
+### The airborne patrol's helicopter, stages 2 and 4 (decisions D21; docs/cpc-stages.md)
+- Measured first, for P13: a mirrored path in the plotter (a second entry to sprite_draw, its own page of
+  steps and core, a Mirror table in main RAM): exact against the stored mirrored frames (the car's 9 body
+  frames, and 99 clipped placements), but 30-38% more a sprite, 6 cycles a byte (the car +4,100 a loop while
+  turned left), and about 660 bytes of code and tables against 716 for the helicopter's frame. Rich: keep the
+  mirrored sprites stored (D21). His palette idea measured too: the frames differ only in the blades, but pen
+  15 is a dithered pair (about 10 switched colours), and only over plain sky: both frames stored.
+- gensprites: the helicopter's four sprites (each frame's helicopter and shadow) for the stages with one; they
+  are the same in both, so kept once (heli.6502's pack, 577 bytes) at the sprite slot's end (HeliData), the
+  stage's own below it, and loaded last as a fifth part (stage_load: the sprite parts' piece can reach it).
+  HeliSprite, a byte in the slot, is its first sprite. The slot (8,450 bytes) is more than a playfield, so its
+  tables and its parts are two packs (the stage's file a scope, Stage<n>Sprites.DataPack and .PartsPack).
+- RowCars to main RAM (draw_objects is there now): DataVarsOrg &BFCB -> &BFE0, 21 bytes for the slot.
+- `src/airborne.6502`: air_step (the CPC's &329E: codes 17 and 18 its message and flying in; 15 away; off the
+  left, gone), air_move (&3231: down to &61, the bob, its x with the road and 8 a loop to its target),
+  air_draw (&31AC: at row 3 after its cars, before a mouth, on bit 1 of RowCars; the mouth now bit 0;
+  placed as the CPC's drawer does). Its state is RoadHints' first byte, which next_s6 already set (the CPC's
+  &1759). The loop calls air_step after the traffic's spawn and air_move after the cars' projection.
+- Checked: bench.py IDENTICAL in all seven runs (stage 1 has none; the heli's data and RowCars' move included),
+  +2 to +7 cycles a loop. `work/store/compare_heli.py` (compare_tunnel's way, stage 2, 300 and 700 loops):
+  its state, x and line the CPC's in every loop; the differing pixels the known ones (the horizon line, the
+  fork's lamp posts, a backdrop line in one loop); in its boxes 4 pixels in 3 loops (the CPC with pen 4 or 2
+  where the BBC shows what's behind: not found yet, perhaps the CPC's mirrored drawing at its edges). jsbeeb:
+  stage 2's helicopter flying in with "THIS IS AIRBORNE PATROL" and the pilot's face.
+- Room: data bank 14 free; main RAM's code 584 free at its end, the &259 gap 443; the store 143 free; the
+  stages' bank 106.
+- Rechecked on the build with the helicopter's code: bench.py against the two fixes' build, six runs IDENTICAL;
+  the arrest run identical to record 483, where it reaches stage 2's segment 251 and the road sets the
+  helicopter's state (3): bench.py's loop never called air_step, so it drew it from its state alone. Its loop
+  now calls air_step and air_move as the game's does, when the build has them; past 483 the runs differ by the
+  helicopter, which the build before hasn't. Cycles a loop: -11 (window), -9 (drive) in what the bench calls,
+  plus air_step and air_move's 37 with no helicopter. compare_tunnel.py (stage 1, the mouth now RowCars' bit
+  0): the same 25 of 241 tunnel loops differ as before.

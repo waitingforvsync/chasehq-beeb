@@ -8,8 +8,6 @@
 \\ of a pixel: logical 8-15 are the sirens' colours (tools/gendata.py).
 
 SECTION DataVars
-.RowCars                                ; draw_objects': each row's cars, slot k at bit k + 2 (clear
-    SKIP 21                             ; but in draw_objects: make_tables clears it)
 .MaskTab                                ; a masked byte (&80-&8F, read at MaskTab-&80) -> the screen's
     SKIP 16                             ; bits to keep: its transparent pixel's (made by make_tables)
 .OrTab                                  ; and its opaque pixel's bits

@@ -761,11 +761,11 @@ NagLoops = 100
 \\ along its segment the car is, overlapping the player's box (&78-&97, quarter-bytes) across. A hit's code
 \\ (4 at row 1 or past half way at rows 0 and 2; 1 at row 1 past half way) is one less if it's centred, one
 \\ more if it's right of centre, and 0 never registers. A car hit goes and the chain with it, and the player
-\\ bounces off (unless bouncing already: then it's left alone); the criminal's rammed: 10,000 (a double,
-\\ code 1, 50,000 and two rams' damage), stunned, then a short sprint.
+\\ bounces off (unless bouncing already: then it's left alone); the criminal's rammed: the stage x 10,000 (a
+\\ double, code 1, (the stage + 4) x 10,000 and two rams' damage), stunned, then a short sprint.
 \\
 \\ Inputs:
-\\     the slots (ObjD, ObjX, ObjRow), RoadFrac, RoadSpeed, CarTurbo, CrimFar, CrimStun
+\\     the slots (ObjD, ObjX, ObjRow), RoadFrac, RoadSpeed, CarTurbo, CrimFar, CrimStun, Stage
 \\
 \\ Outputs:
 \\     the bounce's state; a car hit gone; CrimRams, CrimStun, CrimSprint, Score, Chain
@@ -849,10 +849,10 @@ RamEndTurbo = 230                       ; and with a turbo
     LDA #5:STA CrimStun:STA CrimSprint      ; (4 loops untouched; then 4 of sprint)
     INC CrimRams
     LDA #3:LDY #1:JSR sound_effect          ; (the crunch, priority 1)
-    LDA #1                                  ; 10,000 (stage 1's: the stage's later)
+    LDA Stage                               ; the stage x 10,000 (BCD: 1-5)
     LDY code:DEY:BNE @+
-    INC CrimRams                            ; (a double: two rams' damage, and 50,000)
-    LDA #5
+    INC CrimRams                            ; (a double: two rams' damage, and (the stage + 4) x 10,000)
+    CLC:ADC #4
 .@
     SED
     LDX ContinuesUsed:BEQ full

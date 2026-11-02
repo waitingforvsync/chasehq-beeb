@@ -1,30 +1,39 @@
-\\ stageload.6502 - a stage's own data put in place at its start (decisions D17, P12): its three parts (the
-\\ road's in the code's bank, the sprites' in the data's, the text's in the store's), each kept packed in the
-\\ stages' bank or the store's (stages.6502, store.6502) and filled in as pieces (roadpieces.6502 and the rest).
+\\ stageload.6502 - a stage's own data put in place at its start (decisions D17, D20, D21): its parts (the
+\\ helicopter's, if it has one, kept once for both stages that do; the road's in the code's bank; the sprites'
+\\ tables and their parts, in two as the slot is more than a playfield, in the data's; the text's in the
+\\ store's), each kept packed in the stages' bank or the store's (stages.6502, store.6502) and filled in as
+\\ pieces (roadpieces.6502 and the rest), the text first and the helicopter last.
 
-\\ Each stage's packs: the road's, the sprites', the text's; and the zero page byte holding the bank that keeps
-\\ each (bankstages or bankstore)
+\\ Each stage's packs: the helicopter's (0 none), the road's, the sprites' tables and parts, the text's; and the
+\\ zero page byte holding the bank that keeps each (bankstages or bankstore)
 
-StagePacks = {Stage1RoadPack, Stage1DataPack, Stage1TextPack, Stage2RoadPack, Stage2DataPack, Stage2TextPack,
-              Stage3RoadPack, Stage3DataPack, Stage3TextPack, Stage4RoadPack, Stage4DataPack, Stage4TextPack,
-              Stage5RoadPack, Stage5DataPack, Stage5TextPack}
+StagePacks = {0, Stage1RoadPack, Stage1Sprites.DataPack, Stage1Sprites.PartsPack, Stage1TextPack,
+              HeliPack, Stage2RoadPack, Stage2Sprites.DataPack, Stage2Sprites.PartsPack, Stage2TextPack,
+              0, Stage3RoadPack, Stage3Sprites.DataPack, Stage3Sprites.PartsPack, Stage3TextPack,
+              HeliPack, Stage4RoadPack, Stage4Sprites.DataPack, Stage4Sprites.PartsPack, Stage4TextPack,
+              0, Stage5RoadPack, Stage5Sprites.DataPack, Stage5Sprites.PartsPack, Stage5TextPack}
+StageParts = 5
 .StagePackLo
     EQUB LO(StagePacks)
 .StagePackHi
     EQUB HI(StagePacks)
 .StagePackBank
-    EQUB bankstages, bankstages, bankstages, bankstages, bankstages, bankstages
-    EQUB bankstages, bankstages, bankstore, bankstages, bankstore, bankstages
-    EQUB bankstages, bankstore, bankstore
+    EQUB 0, bankstages, bankstages, bankstages, bankstages
+    EQUB bankstore, bankstages, bankstages, bankstages, bankstages
+    EQUB 0, bankstages, bankstages, bankstages, bankstore
+    EQUB bankstore, bankstages, bankstore, bankstore, bankstages
+    EQUB 0, bankstages, bankstore, bankstore, bankstore
+    ASSERT P% - StagePackBank == LEN(StagePacks), "a bank for each pack"
 
 \\ Each part's bank (its zero page byte) and pieces
 
+PartPieces = {HeliPieces, RoadPieces, SpriteTablePieces, SpritePartPieces, TextPieces}
 .PartBank
-    EQUB bankcode, bankdata, bankstore
+    EQUB bankdata, bankcode, bankdata, bankdata, bankstore
 .PartPiecesLo
-    EQUB LO(RoadPieces), LO(SpritePieces), LO(TextPieces)
+    EQUB LO(PartPieces)
 .PartPiecesHi
-    EQUB HI(RoadPieces), HI(SpritePieces), HI(TextPieces)
+    EQUB HI(PartPieces)
 
 \\ Put a stage's own data in place: for each part, its pack unpacked into the hidden playfield from the bank
 \\ that keeps it, then its pieces copied up into the part's bank, one after another.
@@ -39,20 +48,21 @@ StagePacks = {Stage1RoadPack, Stage1DataPack, Stage1TextPack, Stage2RoadPack, St
 
 .stage_load
 {
-    ZA_AUTO1 part                       ; local: the part, 2 down to 0
+    ZA_AUTO1 part                       ; local: the part, 4 down to 0
     ZA_AUTO2 piece                      ; local: its next piece's entry
     ZA_AUTO2 from, to                   ; local: the copy's source (on through the playfield) and destination
     ZA_AUTO1 left                       ; local: a piece's bytes past its whole pages
 
     JSR wait_back                       ; (the playfield last drawn shown: back the hidden one)
     LDA #0:STA SkyTop:STA SkyOther      ; (neither playfield's sky known any more)
-    LDA #2:STA part
+    LDA #StageParts-1:STA part
 .nextpart
-    LDA Stage:ASL A:ADC Stage           ; (C clear) 3 x the stage
-    ADC part:TAX                        ; + the part: its pack's index + 3
-    LDA StagePackLo-3,X:STA unzx.src
-    LDA StagePackHi-3,X:STA unzx.src+1
-    LDY StagePackBank-3,X
+    LDA Stage:ASL A:ASL A:ADC Stage     ; (C clear) 5 x the stage
+    ADC part:TAX                        ; + the part: its pack's index + 5
+    LDA StagePackHi-StageParts,X:BEQ parted ; (none)
+    STA unzx.src+1
+    LDA StagePackLo-StageParts,X:STA unzx.src
+    LDY StagePackBank-StageParts,X
     LDA &0000,Y:STA &FE30               ; ROMSEL: the bank that keeps it
     LDA #0:STA unzx.dst:STA from
     LDA back:STA unzx.dst+1:STA from+1
@@ -63,6 +73,7 @@ StagePacks = {Stage1RoadPack, Stage1DataPack, Stage1TextPack, Stage2RoadPack, St
     LDA PartPiecesLo,X:STA piece
     LDA PartPiecesHi,X:STA piece+1
     JSR pieces
+.parted
     DEC part:BPL nextpart
     LDA bankcode:STA &FE30              ; ROMSEL: the code's back
     RTS

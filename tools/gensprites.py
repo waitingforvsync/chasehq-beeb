@@ -189,8 +189,21 @@ def stage_sprites(stage, files, mem, inks):
     for k in range(2):
         desc = st.rw(obst + 3 * k + 1)
         cars += [st.sprite(desc + 5 * s, 'CarImg') for s in range(6)]
+    # the airborne patrol's helicopter (docs/cpc-stages.md), if the stage has one: its frame lists at (&5BDE)
+    # and (&5BE0), odd loops' the first's images mirrored; each two parts, an x offset then a header: the
+    # helicopter at x + 0, its shadow at x + 8. Four sprites from HeliSprite: each frame's two parts
+    heli = 0
+    lists2 = [st.rw(0x5BDE), st.rw(0x5BE0)]
+    if all(a >= BASE for a in lists2):
+        heli = len(sprites)
+        for k, fl in enumerate(lists2):
+            for part, xoff in ((0, 0), (1, 8)):
+                p = st.rw(fl + 2 * part)
+                assert st.rd(p) == xoff, f'stage {stage}: the helicopter\'s part {part} at x + {st.rd(p)}'
+                n = st.sprite(p + 1, 'Heli')
+                assert n == heli + 2 * k + part, 'the helicopter\'s sprites one after another'
     assert len(sprites) <= 256
-    return sprites, kinds, lists, records, cars
+    return sprites, kinds, lists, records, cars, heli
 
 
 def main(out):
@@ -207,11 +220,18 @@ def main(out):
         assert per[s][0][:CAR_SPRITES] == cars, f'stage {s}: the player\'s car differs'
     most = max(len(per[s][0]) for s in STAGES)      # the tables' entries: the most sprites a stage has
     var = {s: 3 * len(per[s][3]) + sum(len(x[3]) for x in per[s][0][CAR_SPRITES:]) for s in STAGES}
+    helis = [s for s in STAGES if per[s][5]]
     room = max(var.values())                        # the parts and the stage's own sprites
+    # the helicopter's four sprites, the same in every stage that has one: kept once (heli.6502's pack) at
+    # the slot's end, HeliData, the stage's own below it
+    heli_sprites = [per[s][0][per[s][5]:per[s][5] + 4] for s in helis]
+    assert all([x[1:] for x in hs] == [x[1:] for x in heli_sprites[0]] for hs in heli_sprites), 'the helicopters differ'
+    heli_bytes = sum(len(x[3]) for x in heli_sprites[0]) if helis else 0
+    own_room = max(var[s] - (heli_bytes if per[s][5] else 0) for s in STAGES)  # the parts' piece
 
     with open(os.path.join(out, 'sprites.6502'), 'w') as f:
-        f.write('\\\\ sprites.6502 - made by tools/gensprites.py from the CPC disc: do not edit. The player\'s car,\n')
-        f.write('\\\\ then the stages\' slot at the bank\'s end, filled from spritestageN.6502 at a stage\'s start.\n\n')
+        f.write('\\\\ sprites.6502 - made by tools/gensprites.py from the CPC disc: do not edit. The player\'s car;\n')
+        f.write('\\\\ the stages\' slot at the bank\'s end is spriteslot.6502.\n\n')
         for n, (name, w, h, data) in enumerate(cars):
             f.write(f'Spr{name} = {n}\n')
         f.write(f'SprTableSize = {most}                    ; the sprite tables\' entries: the most sprites a stage has\n\n')
@@ -220,28 +240,34 @@ def main(out):
             f.write(f'.SprData{name}                                   ; {w} x {h}, a column at a time, top first\n')
             for i in range(0, len(data), 16):
                 f.write('    EQUB ' + ', '.join(f'&{v:02X}' for v in data[i:i + 16]) + '\n')
-        slot = 5 * most + 20 + 2 * 200 + 42 + room
+        slot = 5 * most + 20 + 2 * 200 + 42 + 1 + room
+    with open(os.path.join(out, 'spriteslot.6502'), 'w') as f:
+        f.write('\\\\ spriteslot.6502 - made by tools/gensprites.py: the stages\' slot at the data bank\'s end.\n')
         f.write('\n\\\\ the stage\'s slot (spritestageN.6502\'s Stage<n>Data, filled whole): SprW, SprH, SprStep (a column\'s\n')
         f.write('\\\\ bytes less 8, signed), SprLo and SprHi (its bytes less 8) by sprite; its roadside objects\' kinds by\n')
         f.write('\\\\ side * 10 + id (0 none, 1 raised, 2 on the ground, 3 parts, 4 the gantry); their part lists by\n')
         f.write('\\\\ (side * 10 + id) * 10 + size - 1; its cars (the criminal first) then its obstacles, by size 0-5;\n')
-        f.write('\\\\ then its parts and its own sprites\n\n')
+        f.write('\\\\ its helicopter\'s first sprite (0 none; then its shadow, then both mirrored); then its parts and its\n')
+        f.write('\\\\ own sprites\n\n')
         f.write(f'DataSlotBytes = {slot}\n')
+        f.write(f'HeliData = DataVarsOrg - {heli_bytes}            ; the helicopter\'s sprites, the slot\'s last (heli.6502)\n')
         f.write('    PADTO DataVarsOrg - DataSlotBytes\n')
         for lab, n in (('SprW', most), ('SprH', most), ('SprStep', most), ('SprLo', most), ('SprHi', most),
                        ('ObjKind', 20), ('ObjPartLo', 200), ('ObjPartHi', 200), ('CarSprite', 42),
-                       ('DataSlotParts', room)):
+                       ('HeliSprite', 1), ('DataSlotParts', room)):
             f.write(f'.{lab}\n    SKIP {n}\n')
 
     for s in STAGES:
-        sprites, kinds, lists, records, carsp = per[s]
+        sprites, kinds, lists, records, carsp, heli = per[s]
         n = len(sprites)
         pad = lambda vals, fill=0: vals + [fill] * (most - len(vals))
         steps = [len(x[3]) // x[1] - 8 & 255 for x in sprites]   # a column's bytes less 8, signed
         with open(os.path.join(out, f'spritestage{s}.6502'), 'w') as f:
             f.write(f'\\\\ spritestage{s}.6502 - made by tools/gensprites.py: stage {s}\'s slot in the data\'s bank\n')
             f.write('\\\\ (sprites.6502\'s), rephased to its place: its sprite tables, objects, cars, parts and sprites.\n\n')
-            f.write('{\n')
+            f.write(f'.Stage{s}Sprites                             ; (its packs: Stage{s}Sprites.DataPack, .PartsPack)\n{{\n')
+            f.write('.DataPack\n')
+            f.write(f'    SECTION Stage{s}DataPacked, transform = "zx02"\n')
             f.write(f'SECTION Stage{s}Data, org = SprW\n')
             for lab, vals in (('SprW', [x[1] for x in sprites]), ('SprH', [x[2] for x in sprites]), ('SprStep', steps)):
                 vals = pad(vals)
@@ -250,7 +276,8 @@ def main(out):
                     f.write('    EQUB ' + ', '.join(str(v) for v in vals[i:i + 32]) + '\n')
             for lab, fn in (('SprLo', 'LO'), ('SprHi', 'HI')):          # each sprite's bytes, less 8
                 f.write(f'    ASSERT P% == {lab}\n')
-                vals = [f'{fn}(SprData{x[0]} - 8)' for x in sprites] + ['0'] * (most - n)
+                vals = [f'{fn}(SprData{"Heli" + str(i - heli) if heli and heli <= i < heli + 4 else x[0]} - 8)'
+                        for i, x in enumerate(sprites)] + ['0'] * (most - n)
                 for i in range(0, len(vals), 8):
                     f.write('    EQUB ' + ', '.join(vals[i:i + 8]) + '\n')
             f.write('    ASSERT P% == ObjKind\n')
@@ -261,24 +288,53 @@ def main(out):
                     f.write('    EQUB ' + ', '.join(f'{fn}(ObjParts + {3 * x})' for x in lists[i:i + 10]) + '\n')
             f.write('    ASSERT P% == CarSprite\n')
             f.write('    EQUB ' + ', '.join(str(c) for c in carsp) + '\n')
+            f.write('    ASSERT P% == HeliSprite\n')
+            f.write(f'    EQUB {heli}\n')
             f.write('    ASSERT P% == DataSlotParts\n')
+            f.write('ENDSECTION\n')
+            f.write('    ENDSECTION\n')
+            f.write('.PartsPack                                  ; (its own pack: the slot is more than a playfield)\n')
+            f.write(f'    SECTION Stage{s}PartsPacked, transform = "zx02"\n')
+            f.write(f'SECTION Stage{s}Parts, org = DataSlotParts\n')
             f.write('.ObjParts                                   ; sprite, X offset (quarter-bytes), kind (1 the end)\n')
             for i in range(0, len(records), 6):
                 f.write('    EQUB ' + ', '.join(f'{a}, {b}, {c}' for a, b, c in records[i:i + 6]) + '\n')
-            for name, w, h, data in sprites[CAR_SPRITES:]:
+            for i, (name, w, h, data) in enumerate(sprites[CAR_SPRITES:], CAR_SPRITES):
+                if heli and heli <= i < heli + 4:
+                    continue                        # (heli.6502's)
                 f.write(f'.SprData{name}                                   ; {w} x {h}, a column at a time, top first\n')
                 for i in range(0, len(data), 16):
                     f.write('    EQUB ' + ', '.join(f'&{v:02X}' for v in data[i:i + 16]) + '\n')
-            f.write(f'    ASSERT P% <= DataSlotParts + {room}\n')
-            f.write('ENDSECTION\n}\n')
+            f.write(f'    ASSERT P% <= {"HeliData" if heli else "DataSlotParts + " + str(room)}\n')
+            f.write('ENDSECTION\n')
+            f.write('    ENDSECTION\n')
+            f.write('}\n')
     with open(os.path.join(out, 'spritepieces.6502'), 'w') as f:
-        f.write('\\\\ spritepieces.6502 - made by tools/gensprites.py: the piece a stage fills in the data\'s bank (its\n')
-        f.write('\\\\ slot, spritestageN.6502\'s): its address and bytes, then 0\n\n')
-        f.write('.SpritePieces\n')
-        f.write('    EQUW SprW, DataSlotBytes\n')
+        f.write('\\\\ spritepieces.6502 - made by tools/gensprites.py: the pieces a stage fills in the data\'s bank (its\n')
+        f.write('\\\\ slot, spritestageN.6502\'s two packs, as the slot is more than a playfield): each its address and\n')
+        f.write('\\\\ bytes, then 0\n\n')
+        f.write('.SpriteTablePieces\n')
+        f.write('    EQUW SprW, DataSlotParts - SprW\n')
         f.write('    EQUW 0\n')
+        f.write('.SpritePartPieces\n')
+        f.write(f'    EQUW DataSlotParts, {own_room}\n')
+        f.write('    EQUW 0\n')
+        f.write('.HeliPieces                                 ; (filled after SpritePartPieces: theirs can reach it)\n')
+        f.write(f'    EQUW HeliData, {heli_bytes}\n')
+        f.write('    EQUW 0\n')
+        f.write(f'    ASSERT DataSlotParts - SprW <= PlayBytes AND {own_room} <= PlayBytes, "a pack unpacks into a playfield"\n')
+    with open(os.path.join(out, 'heli.6502'), 'w') as f:
+        f.write('\\\\ heli.6502 - made by tools/gensprites.py: the helicopter\'s four sprites (stages ' +
+                ', '.join(map(str, helis)) + '), packed once,\n')
+        f.write('\\\\ rephased to the slot\'s end (HeliData): its two parts, then both mirrored.\n\n')
+        f.write('.HeliPack\n    SECTION HeliPacked, transform = "zx02"\nSECTION Heli, org = HeliData\n')
+        for k, (name, w, h, data) in enumerate(heli_sprites[0]):
+            f.write(f'.SprDataHeli{k}                                   ; {w} x {h}, a column at a time, top first\n')
+            for i in range(0, len(data), 16):
+                f.write('    EQUB ' + ', '.join(f'&{v:02X}' for v in data[i:i + 16]) + '\n')
+        f.write('    ASSERT P% == DataVarsOrg\nENDSECTION\n    ENDSECTION\n')
     print(f'sprites: {", ".join(str(len(per[s][0])) for s in STAGES)} a stage (tables of {most}); parts and own '
-          f'sprites {var} in {room}; the slot {5 * most + 20 + 400 + 42 + room} bytes')
+          f'sprites {var} in {room}; the slot {5 * most + 20 + 400 + 42 + 1 + room} bytes; helicopters in {helis}')
 
 
 if __name__ == '__main__':
