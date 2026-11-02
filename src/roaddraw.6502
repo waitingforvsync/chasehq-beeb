@@ -18,6 +18,20 @@ SECTION CodeVars                        ; the loader's (make_tables)
     SKIP 44
 .SrcHi
     SKIP 44
+.Times22                                ; road.6502's: f * 22 for the fraction's top bits f, 0-7
+    SKIP 8
+.EdgeTabLoL                             ; edge_target's tables, by its A (0-3): the tables written
+    SKIP 4                              ; (EdgeTabLo, EdgeTabHi), and the steps read for them (2 a pair:
+.EdgeTabLoH                             ; RoadD, RoadDL); the loader copies them from EdgeTabInit
+    SKIP 4
+.EdgeTabHiL
+    SKIP 4
+.EdgeTabHiH
+    SKIP 4
+.EdgeStepsL
+    SKIP 2
+.EdgeStepsH
+    SKIP 2
 ENDSECTION
 
 ASSERT LO(Col8) == 0 AND LO(E6Of) == 0 AND LO(R6Of) == 0, "the cell tables on pages"
@@ -188,11 +202,9 @@ LineEntry = 69                          ; the line (after its rarer edges' paths
     ZA_AUTO1 r6                         ; local: the right edge's cell, as a runner offset
     ZA_AUTO1 hidden                     ; local: a crest's lines, summed, 0 or less
     ZA_AUTO1 forklines                  ; local: the fork's lines (not the backdrop's road, as the CPC's)
-    ZA_AUTO1 c1, c2, c3, c4             ; local: its spans' ends, as the runner's low bytes
     ZA_AUTO2 fgrass, froad              ; local: its fills, even line then odd
     ZA_AUTO2 frum, flane                ; local: its rumbles' and lanes' indexes, even then odd
     ZA_AUTO1 fg, fr, fru, fla           ; local: this line's
-    ZA_AUTO1 rbase                      ; local: a rumble's index, less x AND 2
     ZA_AUTO1 tleft, tf, tp              ; local: a taper: the left table, the flags, the table it moves
     ZA_AUTO1 tfar, tn, ten, toff        ; local: its far line, its lines, its near entry, the offset
     ZA_AUTO2 tx, tx1                    ; local: its X, near then stepped; its far X
@@ -208,6 +220,7 @@ LineEntry = 69                          ; the line (after its rarer edges' paths
     LDA #0:STA SkyTop                   ; (no sky yet)
     LDA #127:STA line
     LDA #0:STA entry:STA j:STA level:STA levelr:STA set
+    STA MouthKind:STA TunnelBeyond      ; (no tunnel seen yet)
     LDA #3:STA count
     LDA #4:STA right
     LDA RoadSeg:AND #1:STA stripe
@@ -542,6 +555,7 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     CMP #&50:BCC shown
     CMP #&E0:BCC road_done              ; (80-223: the end)
     STA hidden                          ; (a crest)
+    JSR hidden_flags
 .hide
     INC j
     LDY j
@@ -555,8 +569,10 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     BPL shown
 .@
     STA hidden
+    JSR hidden_flags
     JMP hide
 .flat
+    JSR hidden_flags
     INC entry
     JMP segend
 
@@ -586,11 +602,13 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
 
 .full
     RTS                                 ; (the road to the top)
+
 .road_done
     ZA_AUTO1 rows                       ; local: the backdrop's rows to draw
-    ZA_AUTO1 r                          ; local: the next one
+    ZA_AUTO1 r                          ; local: the road's lines, less the fork's
 
     LDA line:BMI full
+    LDX TunnelBeyond:BNE dark           ; (no backdrop: the CPC also tests for an entrance seen, which sets this)
     LDA #127:SEC:SBC line
     SEC:SBC forklines:STA r             ; (r: the road's lines, for the moment, less the fork's)
     LDA RoadH+1:BMI sky
@@ -609,24 +627,33 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
 .@
     LDA rows:BEQ sky
     LDA RoadScroll:JSR back_scroll
-    LDA #24:SEC:SBC rows:STA r
-    LDA line:JSR back_row
+    LDA #24:SEC:SBC rows:TAY            ; Y: the backdrop's row, X: the line in the screen's row
+    LDA line:AND #7:TAX
+    LDA line
+.backrow
+    JSR back_row
 .backline
-    LDA line:AND #7
-    CMP #7:BNE @+
-    LDA line:JSR back_row
-    LDA #7
-.@
-    TAX
-    LDY r
     JSR BackRunner
     ZA_CANCALL BackRunner
     DEC line
-    INC r
-    DEC rows:BNE backline
+    INY
+    DEC rows:BEQ backed
+    DEX:BPL backline
+    SAME_PAGE backline
+    LDX #7
+    LDA line:BPL backrow                ; always (a new row: the backdrop is under the top)
+.backed
     LDA line:BMI done
     AND #7:CMP #7:BEQ sky               ; (the sky starts on a row of its own)
     LDA line:JSR runner_row             ; (or part way up the backdrop's last)
+    BNE sky                             ; always (runner_row leaves the row's second page)
+
+    \\ with a tunnel beyond, the sky all black (the CPC's &4D44), and none of it sky for the next time
+
+.dark
+    CLC:ADC #1                          ; (lines 0 to line; SkyTop stays 0)
+    LDX #SkyTunnel
+    JMP skyset                          ; (a JMP, not BEQ: page_draw's size-2 glyph loop then stays off &A200)
 
     \\ the sky: lines 0 to line, those from skyclean up already sky in this playfield
 
@@ -634,13 +661,17 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     LDA line:BMI done
     CLC:ADC #1:STA SkyTop               ; (lines 0 to line)
     SEC:SBC skyclean:BEQ done:BCC done  ; the lines to draw
+    LDX #SkyByte
+.skyset
     STA skyn
+    STX skyfill+1
 .skyline
     LDA line:AND #7:TAX
     CPX #7:BNE @+
     LDA line:JSR runner_row
 .@
-    LDA #SkyByte
+.skyfill
+    LDA #SkyByte                        ; self-modified: the sky's, or a tunnel's black
     JSR Runner
     ZA_CANCALL Runner
     DEC line
@@ -648,82 +679,104 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
 .done
     RTS
 
+    \\ the fork's spans' ends off the screen (fline's)
+
+.e1off
+    JSR fork_off
+    JMP e1
+.e2off
+    JSR fork_off
+    JMP e2
+.e3off
+    JSR fork_off
+    JMP e3
+.r2on
+    LDX EdgeR2Lo,Y:LDA R6Of,X
+    JMP r2
+.r2left
+    LDA #LO(Runner)                     ; (left of the screen: grass from cell 0)
+    JMP r2
+
     \\ the fork's lines (the CPC's &4DCE), from its first hold segment to the road's end: five spans (grass, the
     \\ first road, grass, the second road, grass), four rumbles, and on P1 the two lane lines; the normal colours;
     \\ the phase and levels carried on (the right rumbles at the left's level); a crest's segments an entry
     \\ each; its lines not the backdrop's road
 
 .fork
-    LDA line:JSR fork_row
+    LDA line:STA forklines              ; (its first line: the lines drawn, at its end)
+    JSR fork_row
 .fseg
     JSR fork_colours
 .fline
     LDA line:AND #7:STA inrow
     CMP #7:BNE @+
     LDA line:JSR fork_row               ; (a new row)
+    LDA #7
 .@
-    LDA line:AND #1:TAX                 ; the line's fills
+    AND #1:TAX                          ; the line's fills
     LDA fgrass,X:ZA_INDEXEDBY 0..1:STA fg
     LDA froad,X:ZA_INDEXEDBY 0..1:STA fr
     LDA frum,X:ZA_INDEXEDBY 0..1:STA fru
     LDA flane,X:ZA_INDEXEDBY 0..1:STA fla
 
-    \\ the spans' ends as the runner's cells: E(L1), E(the first's end), E(the second's start), R(R2), none
-    \\ before the last
+    \\ the spans' ends as the runner's cells, into the calls that start there: E(L1), E(the first's end),
+    \\ E(the second's start), R(R2), none before the last; an edge off the screen out of line, but R2 off its
+    \\ right (the usual)
 
     LDY entry
-    LDX EdgeLLo,Y:LDA EdgeLHi,Y:JSR fork_e:STA c1
-    LDX Lane2Lo,Y:LDA Lane2Hi,Y:JSR fork_e
-    CMP c1:BCS @+
-    LDA c1
+    LDX EdgeLLo,Y:LDA EdgeLHi,Y:BNE e1off
+    LDA E6Of,X
+.e1
+    STA fj1+1
+    LDX Lane2Lo,Y:LDA Lane2Hi,Y:BNE e2off
+    LDA E6Of,X
+.e2
+    CMP fj1+1:BCS @+
+    LDA fj1+1
 .@
-    STA c2
-    LDX Lane3Lo,Y:LDA Lane3Hi,Y:JSR fork_e
-    CMP c2:BCS @+
-    LDA c2
+    STA fj2+1
+    LDX Lane3Lo,Y:LDA Lane3Hi,Y:BNE e3off
+    LDA E6Of,X
+.e3
+    CMP fj2+1:BCS @+
+    LDA fj2+1
 .@
-    STA c3
-    LDA EdgeR2Hi,Y:BEQ @+
-    JSR right_off
-    JMP r2
-.@
-    LDX EdgeR2Lo,Y:LDA R6Of,X
+    STA fj3+1
+    LDA EdgeR2Hi,Y:BEQ r2on
+    BMI r2left
+    LDA #LO(Runner) + 192               ; (right of the screen: no grass after)
 .r2
-    CMP c3:BCS @+
-    LDA c3
+    CMP fj3+1:BCS @+
+    LDA fj3+1
 .@
-    STA c4
+    STA fj4+1
 
     \\ the spans, each to an RTS at its end
 
     LDX inrow
-    LDY c1:LDA #&60:STA RunnerPage,Y
+    LDY fj1+1:LDA #&60:STA RunnerPage,Y
     LDA fg
     JSR Runner
     ZA_CANCALL Runner
     LDA #&9D:STA RunnerPage,Y
-    LDY c2:LDA #&60:STA RunnerPage,Y
-    LDA c1:STA fj1+1
+    LDY fj2+1:LDA #&60:STA RunnerPage,Y
     LDA fr
 .fj1
     JSR Runner                          ; self-modified: the first road's cell
     ZA_CANCALL Runner
     LDA #&9D:STA RunnerPage,Y
-    LDY c3:LDA #&60:STA RunnerPage,Y
-    LDA c2:STA fj2+1
+    LDY fj3+1:LDA #&60:STA RunnerPage,Y
     LDA fg
 .fj2
     JSR Runner                          ; self-modified: the grass between's
     ZA_CANCALL Runner
     LDA #&9D:STA RunnerPage,Y
-    LDY c4:LDA #&60:STA RunnerPage,Y
-    LDA c3:STA fj3+1
+    LDY fj4+1:LDA #&60:STA RunnerPage,Y
     LDA fr
 .fj3
     JSR Runner                          ; self-modified: the second road's
     ZA_CANCALL Runner
     LDA #&9D:STA RunnerPage,Y
-    LDA c4:STA fj4+1
     LDA fg
 .fj4
     JSR Runner                          ; self-modified: the grass after
@@ -751,7 +804,7 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     LDY entry
     LDA EdgeR2Hi,Y:BNE @+
     LDA EdgeR2Lo,Y:SEC:SBC #8:BCC @+
-    TAY:LDA fru:ORA #1:JSR fork_rumble  ; (the right edge's bytes)
+    JSR fork_right                      ; (the right edge's bytes)
 .@
 
     \\ the lane lines on P1: the first's (Lane1), the second's (EdgeR, which the split made it)
@@ -768,12 +821,12 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
 
     \\ up a line, or the segment's end
 
-    INC forklines
     DEC line:BMI fdone
     INC entry
     DEC lines:BEQ fend
     JMP fline
 .fdone
+    LDA forklines:SEC:SBC line:STA forklines    ; (the lines drawn: as the CPC's, not the backdrop's road)
     JMP road_done
 
     \\ the segment's end: the stripes and the levels move on; zero and crest segments an entry each; the road's
@@ -804,19 +857,15 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     INC entry
     JMP fend
 
-    \\ a left edge's cell (A its X's high byte, N and Z from it; X its low byte) as the runner's low byte: x
-    \\ / 8 + 1, or cell 0 left of the screen, 32 right of it
+    \\ an edge off the screen (N: its X's high byte's sign) as the runner's low byte: cell 0 left of the
+    \\ screen, 32 right of it
 
-.fork_e
-    BEQ @+
-    BMI fe0
+.fork_off
+    BMI @+
     LDA #LO(Runner) + 192
     RTS
-.fe0
-    LDA #LO(Runner)
-    RTS
 .@
-    LDA E6Of,X
+    LDA #LO(Runner)
     RTS
 
     \\ the fork's colours for its phase and level (the normal set's): fills, rumbles' and lanes' indexes
@@ -843,14 +892,15 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     ORA #4:STA flane+1
     RTS
 
-    \\ a rumble's three bytes (A its index less x AND 2, the side in bit 0; Y its first byte's x), by stores
-    \\ whose pages fork_row patches a row
+    \\ a rumble's three bytes (A its first byte's x), a left edge's or a right's, by stores whose pages
+    \\ fork_row patches a row
 
+.fork_right
+    TAY:AND #2:ORA fru:ORA #1:TAX       ; (the right side's bytes: bit 0)
+    BNE fork_rumble                     ; always
 .fork_left
-    TAY:LDA fru                         ; (A: x; a left edge's bytes)
-.fork_rumble
-    STA rbase
-    TYA:AND #2:ORA rbase:TAX
+    TAY:AND #2:ORA fru:TAX
+.fork_rumble                            ; (X: the bytes' index, Y: x)
     LDA Col8,Y:ORA inrow
     CPY #128:TAY                        ; (C: the row's second half)
     BCS frhigh
@@ -880,7 +930,7 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
 
 .fork_mid
     TAY:AND #4:BNE @+
-    LDA fru:ORA #1:JMP fork_rumble
+    TYA:JMP fork_right
 .@
     TYA:AND #2:ORA fru:TAX
     LDA Col8,Y:ORA inrow
@@ -1168,16 +1218,49 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
 .plain
     RTS
 .special
-    TXA:AND #&A0:CMP #&80:BNE plain     ; (&C0 without bit 5: the alternative ground; tunnels not yet)
+    TXA:BPL tunnel                      ; (bit 6 without 7: a tunnel)
+    AND #&A0:CMP #&80:BNE plain         ; (&C0 without bit 5: the alternative ground)
     LDA #1:STA set
     LDA #0:STA marks
     LDY #0:LDX right                    ; the left edge, the right as it was
+    JMP tables
+.tunnel
+    STY tleft
+    LDY j:AND #&0C                      ; (a mouth on an entrance's first segment or an exit's second)
+    JSR tunnel_flags
+    LDA #0:STA marks
+    LDY tleft:LDX #3                    ; the left edge, the right lane line 3's
     JMP tables
 .change
     STY lastl+1:STX lastr+1
     JSR oddcopy + LineTables
     LDY lastl+1:LDX lastr+1
     JMP evencopy + LineTables
+
+    \\ a hidden or flat segment's flags (the CPC's &4BB1, &4BFF): a tunnel's colours from it, its tables not,
+    \\ and a mouth only on an entrance's first segment, two rows on
+
+.hidden_flags
+    LDA flags:CLC:ADC j:TAY
+    LDA RoadWindow,Y:TAX
+    ASL A:BCS plain:BPL plain           ; (bit 6 without bit 7: a tunnel)
+    LDY j:INY:INY
+    TXA:AND #&04
+                                        ; then on into tunnel_flags
+
+    \\ a tunnel segment's flags (X; the CPC's &4949): a mouth at row Y if they have a bit of A's (A and Z its
+    \\ bits), MouthKind the flags (bit 4 an exit's: the outside beyond it); the tunnel's colours beyond, or
+    \\ beyond an exit the normal ones
+
+.tunnel_flags
+    BEQ beyond                          ; (no mouth: A 0)
+    STY MouthAt
+    STX MouthKind
+    TXA:AND #&10                        ; (an exit's: the outside beyond)
+.beyond
+    EOR #&10:LSR A:LSR A:LSR A:STA set  ; (2 the tunnel's colours, 0 the normal)
+    LSR A:STA TunnelBeyond              ; (1 the tunnel beyond)
+    RTS
 
     \\ the colours, for the set, the phase and the rumbles' widths, into both copies; and which lane blocks
     \\ run. Only when they change
@@ -1188,8 +1271,8 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     ZA_AUTO1 lanebytes                  ; local: the lane bytes' (the even line's)
     ZA_AUTO 3, laneops                  ; local: the lane blocks' first opcodes
 
-    LDA set:ASL A:ORA phase:ASL A:ASL A:ORA marks
-    ASL A:ASL A:ORA level:ASL A:ASL A:ORA levelr
+    LDA set:ASL A:ORA phase:ASL A:ASL A:ORA marks   ; (((set * 2 + phase) * 4 + marks) * 8, at most 184
+    ASL A:ASL A:ASL A:ADC level:ADC levelr          ; + level + levelr: levelr lags level by 1 at most)
 .lastkey
     CMP #&FF:BNE @+                     ; self-modified: the colours patched in (never &FF)
     RTS
@@ -1226,7 +1309,7 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     JMP evencopy + LineFills
 }
 
-ASSERT FillAlt == FillNormal + 8, "the alternative fills follow the normal"
+ASSERT FillAlt == FillNormal + 8 AND FillTunnel == FillNormal + 16, "the fills by set"
 
 \\ The row runner's pages, and both line copies' stores', for a row of the road.
 \\

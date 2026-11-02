@@ -17,6 +17,9 @@ SECTION CodeFile, filename = "CHASEC", load = &FFFF0000+BankLoad
         INCLUDE "text.6502"             ; the message window and the pages
         INCLUDE "turbos.6502"           ; the turbo icons, compiled
         INCLUDE "popup.6502"            ; the bonus popup
+        INCLUDE "tunnel.6502"           ; the tunnel's state and mouth
+
+        PADTO CodeDataOrg               ; (the code's free bytes)
         INCLUDE "../build/gen/gen.6502"     ; the pens' dithered bytes, the panel's font, the meter's bars
         INCLUDE "../build/gen/road.6502"    ; the road's tables and the stage's streams (tools/genroad.py)
     ENDSECTION

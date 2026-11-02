@@ -90,6 +90,16 @@ state machine by self-modifying the branch, as per exhale."
 Rich: "i would love to find a way of improving on the CPC frame rate somehow", "not that the CPC frame rate
 isn't totally acceptable, but i feel like the bbc micro can do it better".
 
+### D15. The rest of the frame-rate review: 01, 06 and 07; not the backdrop skip (2026-11-01)
+Rich: "go ahead and merge P10" (P10: 01, 06 and 07 together; not 08, the backdrop skip).
+- 01 `edge_table`'s steep segments by patched constants, 06 the fork's lines, 07 Times22 and edge_target's
+  tables made by the loader into CodeVars. Exact: bench.py IDENTICAL in all seven runs, check_road.py 0 of
+  600 differ on both branches.
+- jsbeeb with the real IRQ: 300 loops 187,324 -> 183,867 cycles a loop mean (4.691 -> 4.604 frames); 1,000
+  loops 173,109 -> 170,746, 90th percentile 195,928 -> 193,319, 99th 233,177 -> 224,511.
+- Code bank 566 -> 536 free (all 30 from the pad before RoadT: the code before it now ends 35 bytes past
+  &A800; the bank's end unchanged), CodeVars 168 -> 140, main RAM and the data bank unchanged.
+
 ---
 
 ## Proposed
@@ -157,23 +167,16 @@ that gap, go in the code bank instead. Left: the code bank about 570 bytes, main
 GameVars, the gap 288, the data bank about 300. The dissolve's masks (316 bytes) and the rest of the game's
 flow will need room: the title and the stage intro may want an overlay or a bank of their own.
 
-
-### P10. The rest of the frame-rate review: 01, 06 and 07 together; not the backdrop skip (2026-10-31, Claude)
-The review (`work/review-frame/`, its patches exact by bench.py and check_road.py) found seven changes. The
-four that are faster and smaller are merged. The other three are worth taking together:
-- 01 `edge_table` (steep segments by patched constants, the sum in Y): road_frame 2,396 a loop mean, 3,944
-  worst, +36 code-bank bytes.
-- 06 the fork's lines (fork_e inlined, the span ends kept in the JSR operands): road_draw 1,200 mean, 7,293
-  worst (the fork's loops are the slowest: 220K against 174K), +22.
-- 07 Times22 and edge_target's tables made by the loader into CodeVars: -28 in the code bank, +28 of
-  CodeVars (140 of 168 left), about 40 in the loader. With all seven, the text, turbo, popup and gen.6502
-  code keep the addresses they had before the review, so no page checks move.
-- Separately: with the four merged, the code before RoadT ends 5 bytes past &A800 (the pad is 251). Five
-  bytes saved there would move RoadT down a page and put 256 at the bank's end instead.
-- Together with the four merged: jsbeeb, 1,000 loops, 175,838 -> 170,746 cycles a loop mean, 99th percentile
-  240,209 -> 224,511; code bank and main RAM as before, CodeVars 28 fewer.
-- Not 08, the backdrop skip: 932-1,055 a loop for +125 bytes, its worst loop 331 slower, and after the
-  sighting the damage meter would stop most of it.
+### P11. The tunnel review's two trades: p5 and p7 (2026-11-02, Claude)
+In `work/review-tunnel/patches/`, on top of the merged rule set (p0-p4, p6, p8). Both cost code bank bytes,
+of the 50 now free in front of the data.
+- p5: the mouth's line parity toggled with `TYA:EOR #1:TAY`, not worked out each line. +3 bytes, -173 cycles
+  a tunnel loop, nothing elsewhere.
+- p7: road_draw doesn't draw what the mouth will cover (the sky, and the road under the band across). +42
+  bytes; entrance loops -9,924, exit -7,825, inside +10, every other loop +17.
+- Both: worst loop 129,720 -> 125,209 (py65, road_draw + plot_objects). Exact by the reviewer's checks: the
+  picture after the objects identical in all 260 lockstep loops, the bench's 1,060.
+Recommended: p7, as the tunnel's loops are the worst; p5 only if the bytes are there.
 
 ---
 
@@ -209,6 +212,19 @@ bounds 227. One more way: the player's car is stored twice, plain and mirrored (
 it as it's drawn would give 3,689 back, for a mirrored path through the plotter and a 64-byte swap table for
 its opaque bytes (masked bytes already go through tables), about 300 bytes, and 6 cycles an opaque byte (TAX,
 LDA swap,X) while steering left, about 2K a loop (estimates, not measured).
+
+Measured (2026-11-01, docs/cpc-stages.md): each stage's own data as the BBC stores it is 9,840 / 9,669 /
+9,180 / 9,456 / 10,355 bytes (stages 1-5), 48,500 for all five; the shared part 11,095. So stages 2-5 need a
+load each whatever the banks. A stage's slots, the most any stage needs: 2,349 in the code bank, 7,806 in the
+data bank, 727 in main RAM (stage 1 uses 2,100, 7,486 and 254). Not counted yet: stages 2 and 4's helicopter
+(716 bytes of images), the gantry's beam, the tunnel. Stage 1 itself has a tunnel the BBC doesn't draw yet.
+
+Packed (2026-11-01, `work/lv/packed.py`, the build's ZX02): each stage's own data 4,636 / 4,763 / 4,128 /
+4,371 / 5,071 bytes. Rich asked whether a full 64K of sideways RAM (a fourth bank) would do without the
+multi-load: kept packed there and unpacked over the stage's slots at each stage start, stages 2-5 take 18,333
+and stage 1 must be kept too for the next game (22,969 in all), plus the helicopter and the gantry, against
+16,384, with the code bank full. Not with the speech; without it (two spare banks, 32K), yes. Mirroring the
+sprites as they're drawn saves 0-788 bytes a stage before packing: not the difference.
 
 ### O4. Keys, and whether to read a joystick
 The ADC is off for the rupture's timing, as in Teddy Boy.

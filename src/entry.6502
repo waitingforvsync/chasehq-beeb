@@ -93,6 +93,8 @@
     \\ the rupture's and the keys' state: playfield A shown, no request, no keys
 
     LDA #0:STA reqshow:STA irqframes:STA keys
+    LDA #EngineAtt:STA sndatt           ; (the engine's, out of a tunnel, till tunnel_state's)
+    LDA #EngineBase:STA enginebase
 
     \\ synced to vsync (hexwab's and tricky's): to within ~10 cycles, then exactly by waiting a cycle short
     \\ of a frame until the vsync's flag isn't set
@@ -143,7 +145,8 @@ ENDIF
 \\     the code's bank paged in
 \\
 \\ Outputs:
-\\     SqLo, SqHi, Col8, E6Of, R6Of, SrcLo, SrcHi; Lane1Hi-Lane3Hi from LaneEntries on; MaskTab, OrTab;
+\\     SqLo, SqHi, Times22, edge_target's tables, Col8, E6Of, R6Of, SrcLo, SrcHi; Lane1Hi-Lane3Hi from
+\\     LaneEntries on; MaskTab, OrTab;
 \\     RowCars clear
 \\     A, X, Y: corrupted
 
@@ -185,6 +188,19 @@ ENDIF
     ADC #LO(Runner):STA R6Of,X
     ADC #6:STA E6Of,X
     INX:BNE cells
+
+    \\ road.6502's: f * 22, and edge_target's tables
+
+    LDX #7
+    LDA #7 * 22
+.times22
+    STA Times22,X
+    SEC:SBC #22
+    DEX:BPL times22
+    LDX #19
+.edgetabs
+    LDA EdgeTabInit,X:STA EdgeTabLoL,X
+    DEX:BPL edgetabs
 
     \\ the backdrop's columns: i 0-43 is column i MOD 22, 24 bytes a column
 
@@ -257,6 +273,10 @@ ENDIF
 
 .RightBits                              ; logical c's bits as a right pixel
     EQUB RightPixel(0..7)
+
+.EdgeTabInit                            ; edge_target's tables (road.6502), in their order
+    EQUB LO(EdgeTabLo), HI(EdgeTabLo), LO(EdgeTabHi), HI(EdgeTabHi)
+    EQUB LO(RoadD), LO(RoadDL), HI(RoadD), HI(RoadDL)
 
 \\ The decompressor, for main RAM's code and the panel
 

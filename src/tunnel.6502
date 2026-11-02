@@ -1,0 +1,133 @@
+\\ tunnel.6502 - the tunnel after the road, and its mouth among the sprites (docs/cpc-road.md, the tunnel).
+\\ In the code's bank, with the edge tables and the row runner the mouth draws with.
+
+SECTION GameVars
+.TunnelBeyond                           ; road_draw's: 1 if the last tunnel segment it saw had the tunnel
+    SKIP 1                              ; beyond it (the CPC's &4D45): black walls and sky, no backdrop
+.MouthKind                              ; road_draw's: a mouth seen, its segment's flags (bit 4 an exit's;
+    SKIP 1                              ; the CPC's &4561 1 or 2); 0 none
+.MouthAt                                ; road_draw's: its row (the CPC's &455E)
+    SKIP 1
+.MouthRow                               ; tunnel_state's: the row draw_objects draws the mouth at, 1-21, after
+    SKIP 1                              ; the row's cars (0 none)
+.MouthBand                              ; its band's colours: MouthFills' index, 0 dark red or 2 black
+    SKIP 1
+.MouthAbove                             ; above it to the top: MouthFills' index, 4 the sky or 2 black; 6 none
+    SKIP 1
+ENDSECTION
+
+\\ The tunnel's mouth (the CPC's &455B), at its row's depth among the sprites, from the row's line up: its
+\\ band beside the opening over the road (the left edge to lane line 3, at the row's line below), for h - the
+\\ crest's hidden lines, h the row's scale + 16 - the row; the band across for h / 2 - h / 8; then what's above
+\\ it, to the top. No higher than the playfield's top line.
+\\
+\\ Inputs:
+\\     A: the row's line for its objects (RowYB)
+\\     MouthRow, MouthBand, MouthAbove; RoadY, RowScale, EdgeL, Lane3
+\\     back: the playfield
+\\
+\\ Outputs:
+\\     the playfield; SkyTop lowered to the mouth's top
+\\     A, X, Y: corrupted
+
+.tunnel_mouth
+{
+    ZA_AUTO1 line                       ; local: the line, from the row's up
+    ZA_AUTO1 n                          ; local: the part's lines left
+    ZA_AUTO1 h                          ; local: the height of the first two parts
+    ZA_AUTO1 part                       ; local: the part's colours (MouthFills' index)
+    ZA_AUTO1 lend                       ; local: the first part's RTS: the opening's left, or 192
+
+    STA line
+    JSR runner_row
+    LDA MouthBand:STA part
+    LDX MouthRow
+    LDA RowScale,X:CLC:ADC #17
+    SBC MouthRow:STA h                  ; (C clear: scale + 16 - row, 5 at least, so C set)
+
+    \\ the first part's lines: h less the crest's hidden ones (ya - yb, ya the row's line, its boundary's
+    \\ y + 32); none if the crest hides them all (the CPC would draw 256 then)
+
+    LDA line:SBC #32                    ; (C set)
+    SEC:SBC RoadY,X
+    CLC:ADC h:BEQ across
+    BMI across
+    STA n
+
+    \\ the opening, at the row's line's entry (94 - y), right then left: an edge off the screen leaves its band
+    \\ to the screen's edge, or none at all; and none if the bands meet
+
+    LDA #94:SEC:SBC RoadY,X:TAY
+    LDA Lane3Hi,Y:BEQ ron
+    BMI full                            ; (lane line 3 left of the screen: no opening)
+    LDA #LO(Runner) + 192               ; (right of it: no right band)
+    BNE rset                            ; always
+.ron
+    LDX Lane3Lo,Y:LDA R6Of,X
+.rset
+    STA right+1
+    LDA EdgeLHi,Y:BEQ lon
+    BPL full                            ; (the left edge right of the screen: no opening)
+    LDA #LO(Runner)                     ; (left of it: no left band)
+    BNE lset                            ; always
+    ASSERT LO(Runner) <> 0
+.lon
+    LDX EdgeLLo,Y:LDA E6Of,X
+.lset
+    CMP right+1:BCC opening
+.full
+    LDA #LO(Runner) + 192:STA right+1   ; (no opening: the whole line, the right span none)
+
+    \\ the band beside the opening: the left span to the opening, the right from its end
+
+.opening
+    STA lend:TAY
+    LDA #&60:STA RunnerPage,Y           ; (RTS: the left span's end, for the part)
+    JSR lines
+    LDY lend:LDA #&9D:STA RunnerPage,Y  ; (STA abs,X back)
+    BIT line:BMI done                   ; (past the top)
+
+    \\ the band across, then what's above: whole lines, the right span the runner's own RTS
+
+.across
+    LDA #LO(Runner) + 195:STA right+1
+    LDA h:LSR A:STA n
+    LSR A:LSR A:EOR #&FF:SEC:ADC n      ; h / 2 - h / 8: 2 at least
+    STA n
+    JSR lines:BMI done
+    LDA MouthAbove:CMP #6:BCS done      ; (nothing above)
+    STA part
+    JSR lines                           ; (n 0: to the top)
+.done
+    LDX line:INX                        ; (the top line drawn)
+    CPX SkyTop:BCS @+
+    STX SkyTop
+.@
+    RTS
+
+    \\ n lines of the part (0: 256), up from line: each the left span from cell 0, then the right, in the
+    \\ line's colour; N set if they reach past the top
+
+.lines
+    LDA line:AND #7:TAX                 ; X: the line in its row
+.lineloop
+    TXA:AND #1:ORA part:TAY
+    LDA MouthFills,Y
+    JSR Runner
+    ZA_CANCALL Runner
+    LDA MouthFills,Y                    ; (the runner keeps Y)
+.right
+    JSR Runner                          ; self-modified: the right span's first cell
+    ZA_CANCALL Runner
+    DEC line:BMI top
+    SAME_PAGE top
+    DEX:BPL rowed
+    SAME_PAGE rowed
+    LDX #7                              ; (a new row)
+    LDA line:JSR runner_row
+.rowed
+    DEC n:BNE lineloop
+    SAME_PAGE lineloop
+.top
+    RTS
+}

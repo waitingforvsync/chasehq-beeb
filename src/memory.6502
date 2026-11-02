@@ -10,8 +10,9 @@
 \\   &4000  playfield A: 16 rows of 512 bytes
 \\   &6000  playfield B. CHASE2 loads at &4000 or higher: main RAM's code and the panel packed by ZX02,
 \\          then its loader; all of it cleared with the playfields once the game's started
-\\   &8000  sideways RAM: each routine in the bank with the data it reads (D9); the code's bank's own
-\\          workspace at its top (CodeVars, &B500): the loader's tables, the lane tables
+\\   &8000  sideways RAM: each routine in the bank with the data it reads (D9); in the code's bank, its
+\\          data from a fixed place (CodeDataOrg) and its own workspace at its top (CodeVars, &B500): the
+\\          loader's tables, the lane tables
 
 ZA_POOL &03..&FB, &FD..&FF              ; &FC: the MOS's IRQ entry saves A there
 
@@ -35,6 +36,8 @@ LoadFloor = PlayAddrA                   ; CHASE2 loads no lower: the panel unpac
 BankLoad = &3000                        ; where !BOOT loads a bank's packed file (boot.6502's)
 SwramOrg = &8000
 SwramEnd = &C000
+CodeDataOrg = &A65F                     ; the code's bank's data (gen.6502, road.6502), fixed so that a
+                                        ; change to the code moves no table, nor its page crossings
 CodeVarsOrg = &B500                     ; the code's bank's own workspace (CodeVars): the loader's tables,
                                         ; the lane tables
 DataVarsOrg = &BFCB                     ; the data's bank's (DataVars): draw_objects' RowCars, the

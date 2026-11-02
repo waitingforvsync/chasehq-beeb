@@ -187,8 +187,6 @@ def main(out, stage=1):
         emit(f, 'RoadBase', mem[0xFE00:0xFE00 + 176])
         emit(f, 'RoadM', mem[0xEE00:0xEE00 + 176])
         emit(f, 'RoadN', mem[0xEEB0:0xEEB0 + 176])
-        f.write('    ALIGN &100\n')
-        emit(f, 'RoadT', mem[0xF600:0xF700])
 
         f.write('\n\\\\ &3E03: fraction units a horizon step for |h2| 1-3, then at 4|c| + speed band a backdrop scroll\n')
         f.write('\\\\ (period in loops, step in bytes) for |c| 2, 4, 6\n\n')
@@ -236,14 +234,23 @@ def main(out, stage=1):
         emit(f, 'BackPlanar', planar, 24)
 
         # the fills: per colour set, P0 grass, P0 road, P1 road, P1 grass, each even then odd
-        sets = {'Normal': [st(0x5BBB + i) for i in range(6)], 'Alt': [st(0x5BC1 + i) for i in range(6)]}
+        # (the tunnel's: its road from &5BC7, P0 even, P0 odd, P1; its walls &C0, black)
+        sets = {'Normal': [st(0x5BBB + i) for i in range(6)], 'Alt': [st(0x5BC1 + i) for i in range(6)],
+                'Tunnel': [0xC0, st(0x5BC7), st(0x5BC8), st(0x5BC9), 0xC0, 0xC0]}
         f.write('\n\\\\ fills: P0 grass, P0 road, P1 road, P1 grass, each on even then odd lines\n\n')
         for name, c in sets.items():
             fills = []
             for even, odd in ((c[0], c[0]), (c[1], c[2]), (c[3], c[3]), (c[4], c[5])):
                 fills += fill_bytes(even, odd, inks)
             emit(f, f'Fill{name}', fills)
-        f.write(f'SkyByte = &{mode2_byte(pixel(5, 0, 0, inks), pixel(5, 1, 0, inks)):02X}\n')
+        sky = mode2_byte(pixel(5, 0, 0, inks), pixel(5, 1, 0, inks))
+        f.write(f'SkyByte = &{sky:02X}\n')
+        black = fill_bytes(0xC0, 0xC0, inks)
+        assert black[0] == black[1]
+        f.write(f'SkyTunnel = &{black[0]:02X}                ; (the CPC\'s &C0: a tunnel\'s sky and walls)\n')
+        f.write('\n\\\\ the tunnel mouth\'s colours, even line then odd: the entrance\'s band (&3F), the exit\'s (&C0), the\n')
+        f.write('\\\\ sky above an entrance (&F0)\n\n')
+        emit(f, 'MouthFills', list(fill_bytes(0x3F, 0x3F, inks)) + list(black) + [sky, sky])
 
         # rumbles: set, phase, parity, level, x AND 2, side -> 3 bytes, final (the fill under them known: the
         # left's first byte is over grass and its last over road; the right's the other way round)
@@ -306,7 +313,13 @@ def main(out, stage=1):
             emit(f, lab, outrr[i])
         f.write('\n\\\\ lane pixels: index ((set * 2 + phase) * 2 + parity) * 4 + (x AND 2), x the pixel\'s\n')
         f.write('\\\\ half-pixel (the odd ones between unused)\n\n')
-        emit(f, 'LaneBytes', [lanes[i // 2] if i % 2 == 0 else 0 for i in range(32)])
+        emit(f, 'LaneBytes', [lanes[i // 2] if i % 2 == 0 else 0 for i in range(16 * len(sets))])
+
+        # T last, on the bank's last page before its workspace: the data's own spare bytes in front of it (the
+        # code's are in front of the data, CodeDataOrg)
+        f.write('\n\\\\ T, on the code bank\'s last page: the data\'s spare bytes before it\n\n')
+        f.write('    PADTO CodeVarsOrg - &100\n')
+        emit(f, 'RoadT', mem[0xF600:0xF700])
 
 if __name__ == '__main__':
     main(sys.argv[1] if len(sys.argv) > 1 else 'build/gen', int(sys.argv[2]) if len(sys.argv) > 2 else 1)

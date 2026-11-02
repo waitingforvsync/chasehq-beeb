@@ -818,9 +818,6 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
     JMP shift
 }
 
-.Times22
-    EQUB (0..7) * 22
-
 \\ The boundaries' X steps (the CPC's &50FC): each segment heads for the vanishing point of the curvature
 \\ summed so far, closing on it by the perspective fraction m; the left edge narrows by n besides. The fork's
 \\ second road (the CPC's &50F4) negates each segment's curve, but not the starting heading's.
@@ -962,62 +959,157 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
     ZA_AUTO2 x                          ; in: the edge's X
     ZA_AUTO1 j                          ; local: the segment
     ZA_AUTO1 owed                       ; local: lines owed by a crest, 0 or less
-    ZA_AUTO1 lines, step, acc, down     ; local: the segment's lines, |d|, Bresenham's sum, d's sign
-    ZA_AUTO1 q                          ; local: steep: the steps every line
+    ZA_AUTO1 lines                      ; local: the segment's lines
 
     LDA #0:STA j:STA owed
-    TAX
-.segment
-    LDY j
+    TAX:TAY
+.segment                                ; (Y: j)
     LDA RoadY,Y:SEC:SBC RoadY+1,Y:STA lines ; y[j] - y[j+1]
     CLC:ADC owed
-    SEC:SBC #2
-    BPL drawn
+    CMP #2:BPL drawn                    ; (N: that less 2, as SBC's)
 
-    \\ under two lines: one entry, at the next boundary's X
+    \\ under two lines: one entry, at the next boundary's X; owed what's left, if that's 0 or less (it's
+    \\ 1 or less here)
 
-    CLC:ADC #2                          ; owed + lines
-    BMI @+
-    BEQ @+
+    CMP #1:BNE @+
     LDA #0
 .@
     STA owed
 .steps1
-    LDA RoadD,Y:STA down                ; self-modified: the steps (RoadD or RoadDL)
+    LDA RoadD,Y                         ; self-modified: the steps (RoadD or RoadDL)
+    BMI minus1
     CLC:ADC x:STA x
-    LDA #0:BIT down:BPL @+
-    LDA #&FF
-.@
-    ADC x+1:STA x+1
-    LDA x
 .lo1
     STA &FFFF,X                         ; self-modified: the table's low bytes
-    LDA x+1
+    LDA x+1:ADC #0:STA x+1
 .hi1
     STA &FFFF,X                         ; self-modified: its high bytes
     INX
     JMP next
+.minus1
+    CLC:ADC x:STA x
+.lo1m
+    STA &FFFF,X                         ; self-modified: the table's low bytes
+    LDA x+1:ADC #&FF:STA x+1
+.hi1m
+    STA &FFFF,X                         ; self-modified: its high bytes
+    INX
+    JMP next
 
-    \\ a segment of lines: x stepped by d over them, one entry a line
+    \\ a segment of lines: x stepped by d over them, one entry a line, a loop for each sign and slope, its
+    \\ constants patched in
 
 .drawn
     LDA #0:STA owed
 .steps2
-    LDA RoadD,Y:STA down                ; self-modified: the steps (RoadD or RoadDL)
-    BPL @+
-    EOR #&FF:CLC:ADC #1
+    LDA RoadD,Y                         ; self-modified: the steps (RoadD or RoadDL)
+    BMI dminus
+    CMP lines:BEQ @+
+    BCS psteep
 .@
-    STA step
-    CMP lines:BEQ shallow
-    BCS steep
+    JMP pshallow
+.dminus
+    EOR #&FF:CLC:ADC #1                 ; |d|
+    CMP lines:BEQ @+
+    BCS msteep
+.@
+    JMP mshallow
+
+    \\ |d| over the lines: q = |d| / lines steps every line, and one more as the remainder r adds up past
+    \\ the lines (the CPC's steps one at a time to the same places). The sum t, in Y, is 255 less the
+    \\ CPC's (which goes down by r, and up by the lines at a borrow): up by r, its carry the extra step
+
+.psteep                                 ; (C set: |d| over the lines)
+    LDY #0
+.pdivide
+    SBC lines:INY                       ; (C set)
+    CMP lines:BCS pdivide
+    STA prem+1                          ; r
+    STY pq+1                            ; q
+    INY:STY pq1+1                       ; q + 1
+    LDA lines:EOR #&FF:STA pback2+1     ; 255 - the lines (with C set, less the lines)
+    TXA:ADC lines:STA pend2+1           ; (C clear) the entry past the segment's
+    LDY #255
+.ptloop                                 ; (C clear)
+    TYA
+.prem
+    ADC #0                              ; self-modified: r
+    BCC pnob
+.pback2
+    ADC #0                              ; self-modified: 255 - the lines (C clear after)
+    TAY
+    LDA x
+.pq1
+    ADC #0                              ; self-modified: q + 1
+    JMP pst
+.pnob
+    TAY
+    LDA x
+.pq
+    ADC #0                              ; self-modified: q
+.pst
+    STA x
+.lo4
+    STA &FFFF,X                         ; self-modified: the table's low bytes
+    BCC @+
+    INC x+1
+.@
+    LDA x+1
+.hi4
+    STA &FFFF,X                         ; self-modified: its high bytes
+    INX
+.pend2
+    CPX #0:BCC ptloop                   ; self-modified: the end (C clear going round)
+    JMP next
+.msteep                                 ; (C set: |d| over the lines)
+    LDY #0
+.mdivide
+    SBC lines:INY                       ; (C set)
+    CMP lines:BCS mdivide
+    STA mrem+1                          ; r
+    STY mq1+1                           ; q: with C clear, less q + 1
+    DEY:STY mq+1                        ; q - 1: with C clear, less q
+    LDA lines:EOR #&FF:STA mback2+1
+    TXA:ADC lines:STA mend2+1           ; (C clear)
+    LDY #255
+.mtloop                                 ; (C clear)
+    TYA
+.mrem
+    ADC #0                              ; self-modified: r
+    BCC mnob
+.mback2
+    ADC #0                              ; self-modified: 255 - the lines (C clear after)
+    TAY
+    LDA x
+.mq1
+    SBC #0                              ; self-modified: q (C clear: less q + 1)
+    JMP mst
+.mnob
+    TAY
+    LDA x
+.mq
+    SBC #0                              ; self-modified: q - 1 (C clear: less q)
+.mst
+    STA x
+.lo5
+    STA &FFFF,X                         ; self-modified: the table's low bytes
+    BCS @+
+    DEC x+1
+.@
+    LDA x+1
+.hi5
+    STA &FFFF,X                         ; self-modified: its high bytes
+    INX
+.mend2
+    CPX #0:BCC mtloop                   ; self-modified: the end (C clear going round)
+    JMP next
 
     \\ |d| at most the lines: a step on some lines. The sum is kept less the lines (+256), so its carry is
-    \\ the step; a loop for each sign, its constants patched in
+    \\ the step
 
-.shallow
-    BIT down:BMI sminus
+.pshallow
     STA pstep+1                         ; |d|
-    LDA #255:SEC:SBC lines:STA pback+1  ; 255 - the lines (with C set, less the lines)
+    LDA lines:EOR #&FF:STA pback+1      ; 255 - the lines (with C set, less the lines)
     TXA:CLC:ADC lines:STA pend+1        ; the entry past the segment's
     LDA lines:LSR A:SEC:SBC lines:TAY   ; the sum: half the lines, less the lines
     CLC
@@ -1042,9 +1134,9 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
 .pend
     CPX #0:BCC ploop                    ; self-modified: the end (C clear going round)
     JMP next
-.sminus
+.mshallow
     STA mstep+1
-    LDA #255:SEC:SBC lines:STA mback+1
+    LDA lines:EOR #&FF:STA mback+1
     TXA:CLC:ADC lines:STA mend+1
     LDA lines:LSR A:SEC:SBC lines:TAY
     CLC
@@ -1073,70 +1165,11 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
     INX
 .mend
     CPX #0:BCC mloop                    ; self-modified: the end
-    JMP next
-
-    \\ |d| over the lines: q = |d| / lines steps every line, and one more as the remainder adds up past
-    \\ the lines (the CPC's steps one at a time to the same places)
-
-.steep
-    LDA step:LDY #0
-.divide
-    CMP lines:BCC divided
-    SBC lines:INY                       ; (C set)
-    BCS divide                          ; always
-.divided
-    STA step:STY q                      ; (step: the remainder from here)
-    LDA #0:STA acc
-    LDY lines
-    BIT down:BMI tminus
-.tplus
-    LDA acc:SEC:SBC step:BCS @+
-    ADC lines:STA acc                   ; (C clear) a borrow: one more step
-    LDA x:SEC:ADC q:STA x
-    BCC temit
-    INC x+1
-    BCS temit                           ; always
-.@
-    STA acc
-    LDA x:CLC:ADC q:STA x
-    BCC temit
-    INC x+1
-.temit
-    LDA x
-.lo4
-    STA &FFFF,X                         ; self-modified: the table's low bytes
-    LDA x+1
-.hi4
-    STA &FFFF,X                         ; self-modified: its high bytes
-    INX
-    DEY:BNE tplus
-    JMP next
-.tminus
-    LDA acc:SEC:SBC step:BCS @+
-    ADC lines:STA acc
-    LDA x:CLC:SBC q:STA x               ; (less q + 1)
-    BCS tmemit
-    DEC x+1
-    BCC tmemit                          ; always
-.@
-    STA acc
-    LDA x:SEC:SBC q:STA x
-    BCS tmemit
-    DEC x+1
-.tmemit
-    LDA x
-.lo5
-    STA &FFFF,X                         ; self-modified: the table's low bytes
-    LDA x+1
-.hi5
-    STA &FFFF,X                         ; self-modified: its high bytes
-    INX
-    DEY:BNE tminus
 
 .next
     LDY j:TXA:STA SegCum,Y              ; (the entries to the segment's end: the anchors' places)
-    INC j
-    LDA j:CMP #21:BEQ done
+    INY:STY j
+    CPY #21:BEQ done
     JMP segment
 .done
     RTS
@@ -1152,23 +1185,27 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
 \\     edge_table's operands
 \\     A, Y: corrupted
 
+EdgeTabLo = {EdgeRLo, EdgeLLo, EdgeR2Lo, Lane3Lo}
+EdgeTabHi = {EdgeRHi, EdgeLHi, EdgeR2Hi, Lane3Hi}
+ASSERT EdgeStepsH == EdgeTabLoL + 18, "edge_target's tables together, for the loader's copy"
+
 .edge_target
 {
     TAY
     LDA EdgeTabLoL,Y
-    FOR site = {edge_table.lo1, edge_table.lo2, edge_table.lo3, edge_table.lo4, edge_table.lo5}
+    FOR site = {edge_table.lo1, edge_table.lo1m, edge_table.lo2, edge_table.lo3, edge_table.lo4, edge_table.lo5}
         STA site+1
     NEXT
     LDA EdgeTabLoH,Y
-    FOR site = {edge_table.lo1, edge_table.lo2, edge_table.lo3, edge_table.lo4, edge_table.lo5}
+    FOR site = {edge_table.lo1, edge_table.lo1m, edge_table.lo2, edge_table.lo3, edge_table.lo4, edge_table.lo5}
         STA site+2
     NEXT
     LDA EdgeTabHiL,Y
-    FOR site = {edge_table.hi1, edge_table.hi2, edge_table.hi3, edge_table.hi4, edge_table.hi5}
+    FOR site = {edge_table.hi1, edge_table.hi1m, edge_table.hi2, edge_table.hi3, edge_table.hi4, edge_table.hi5}
         STA site+1
     NEXT
     LDA EdgeTabHiH,Y
-    FOR site = {edge_table.hi1, edge_table.hi2, edge_table.hi3, edge_table.hi4, edge_table.hi5}
+    FOR site = {edge_table.hi1, edge_table.hi1m, edge_table.hi2, edge_table.hi3, edge_table.hi4, edge_table.hi5}
         STA site+2
     NEXT
     TYA:AND #1:TAY                      ; (the steps: RoadD for a right edge, RoadDL for a left)
@@ -1178,21 +1215,6 @@ LeadRight = {RoadLeadS1, RoadLeadS2, RoadLeadS3R, RoadLeadS4R, RoadLeadS5R, Road
     STA edge_table.steps1+2:STA edge_table.steps2+2
     RTS
 }
-
-EdgeTabLo = {EdgeRLo, EdgeLLo, EdgeR2Lo, Lane3Lo}
-EdgeTabHi = {EdgeRHi, EdgeLHi, EdgeR2Hi, Lane3Hi}
-.EdgeTabLoL
-    EQUB LO(EdgeTabLo)
-.EdgeTabLoH
-    EQUB HI(EdgeTabLo)
-.EdgeTabHiL
-    EQUB LO(EdgeTabHi)
-.EdgeTabHiH
-    EQUB HI(EdgeTabHi)
-.EdgeStepsL
-    EQUB LO(RoadD), LO(RoadDL)
-.EdgeStepsH
-    EQUB HI(RoadD), HI(RoadDL)
 
 \\ One road's edges: its X steps from a right edge's X on the bottom line, its curves as they are or negated,
 \\ then its right and left edges' tables.

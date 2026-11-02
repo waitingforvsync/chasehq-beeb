@@ -361,12 +361,46 @@ From the first fork-hold segment to the top, every line is five runs:
 in P1. Normal colours only, no flag types. Zero and negative spans both skip one entry and count as a
 segment end. It doesn't add its lines to `B`.
 
-### Tunnel mouth (`&455B`-`&4723`; partly decoded)
-`&44E1` (after the road) patches `CALL &455B` into the sprite plotter at `&23A9`/`&23CB` while a tunnel is
-in view, so the mouth is drawn at its depth among the sprites. The mouth is a full-width band of `&3F`
-(dark red, entrance) or `&C0` (black, exit) from the tunnel segment's line upwards, scaled with distance,
-with a black opening over the 3-lane road (`&7A` to `&7D`), sky above (see `work/road/tunmouth.png`). The
-renderer has already drawn the tunnel's black sky, black walls and blue road (`&5BC7`) beyond it.
+### Tunnels (`&4949`, `&4BB1`, `&4BFF`, `&44E1`, `&455B`-`&4723`; decoded 2026-11-01)
+A tunnel segment has flags bit 6 without bit 7 (`&45` the entrance's run, `&59` the exit's; a run's first
+segment keeps bit 2, its second bit 3, so the entrance is marked on its first segment, `&45`, and the exit on
+its second, `&59`; the exit's first is `&51`). Every stage's exit run is followed by `&81`.
+
+**The renderer**, on a drawn tunnel segment (`&4949`, the flags shifted left in `L`):
+- Left table `&79+t`, right `&7D` (lane line 3), no lane lines (`&4A00` = `&FF`), no taper.
+- `H` = 1; if bit 2 or 3: the mouth here, `&455E` = j, `&4561` = 1, and with bit 4 (the exit) `&4561` = 2
+  and `H` = 0.
+- `&4D45` = `&4A73` = `H`. With `H` = 1 the road's colours from `&5BC7` (P0 even, P0 odd, P1); with 0 the
+  normal road's (`&5BBC`-`&5BBE`). The grass's colours are left alone; `&4A73` set makes the line drawer
+  store `&C0C0` (black) for grass whatever they are.
+- On a flat or hidden segment (`&4BB1`, `&4BFF`) the same, but only bit 2 marks a mouth, at `&455E` = j + 2,
+  and the tables aren't touched. So a hidden exit (bit 3) leaves `H` at 1.
+- None of it is undone by a `t` = 0 segment (`&49B5` restores the tables and the colours, not `&4A73` or
+  `&4D45`); the renderer's start (`&48BA`) clears `&4561` and `&4D45`.
+- The backdrop is skipped if `&4D45` is 1 or `&4561` is 1 (`&4C76`: their OR's bit 0); the sky is `&C0C0`
+  if `&4D45` is set, else `&F0F0` (`&4D44`).
+
+**After the road** (`&44E1`, after `&2BEA`):
+- `&4561` set: `&46E1` = `&4D45` XOR 1, and `CALL &455B` patched in at `&23A9` and `&23CB`.
+- Else `&4D45` set (in a tunnel, no mouth in view): `&1770` = 5, and the 5 is also the loop's count: the
+  mouth at the first row r from 4 to 8 where `XL[r+1] < XL[r]` or `XR[r] < XR[r+1]` (16-bit, unsigned: the
+  road wider a row on), else 9; `&4561` = 2, `&46E1` = 3 (nothing above).
+- Else: `&1770` = 0, the patches removed. `&1770` is the engine's tunnel note (`&0B04`: + 500, volume 11)
+  and stops effect 7 (`&0949`).
+
+**The mouth** (`&455B`), called by the object pass before its rows (`IYl` = 21) and on each row after its
+cars (`IYl` = r, 20 to 1), drawn when `IYl` = `&455E`. With `h` = `scale[r]` + 16 − r, from line `yb[r]` up
+(the line ends found from `hgt[r]` = 128 − `ya[r]`):
+1. `h` − (`ya[r]` − `yb[r]`) lines of the band (`&3F` dark red for an entrance, `&C0` black for an exit)
+   left of the left edge and right of lane line 3, read at entry `hgt − 2` (the line below `ya`): the left
+   band cells 0 to `L >> 3`, the right from `R >> 3` to 31. `R` left of the screen or `L` right of it: the
+   whole line. Clipped at the playfield's top line. A count of 0 or less isn't guarded: `DJNZ` would draw
+   256 lines (not seen).
+2. `(h >> 1) − (h >> 3)` lines of the band across.
+3. With `&46E1` 0, sky (`&F0F0`) to the top; 1, black; otherwise nothing.
+
+Seen in stage 1 (`work/tunnel/cpc_mouth.py`, the bot, 1,500 loops): the entrance from loop 819 at rows 19
+to 2, inside with the band at row 8 or 9 (loops 843-907), the exit from row 20 in (915 on).
 
 ## Costs (measured)
 Plain Z80 T from the harness over 1,480 game loops of stage 1 (a real CPC takes about 20% longer). The
@@ -431,7 +465,6 @@ Waste:
   3 × 176 + 256 + 60 bytes.
 
 ## Open questions
-- The tunnel mouth's exact shape and height (`&455B`-`&4723`).
 - The fork renderer and the fork tables, checked against the emulator.
 - S4-S6 object codes (sprite spec), and the branch hints at `&1759`-`&175C` (game logic).
 - Are the inks the same in every stage? (Pens are given here; inks belong to the palette code.)

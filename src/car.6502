@@ -420,10 +420,11 @@ NagLoops = 100
 \\ The engine's note and the turbo's whoosh, for the IRQ (sound.6502). The CPC's engine period is
 \\ k * (255 - speed / 2) + 300 (k 4 in LO, 8 in HI) at 62.5 kHz; here periodic noise at 1/15 of tone 3's
 \\ rate, tone 3's period 2/15 of it: (255 - speed / 2) * 8/15 + 40 in LO (v / 2 + v / 32 here), * 16/15 in
-\\ HI (v + v / 16). The turbo's noise period runs 59 down as the CPC's.
+\\ HI (v + v / 16). In a tunnel the CPC adds 500, not 300: 67 (enginebase, tunnel_state's). The turbo's
+\\ noise period runs 59 down as the CPC's.
 \\
 \\ Inputs:
-\\     RoadSpeed, CarGear, CarTurbo
+\\     RoadSpeed, CarGear, CarTurbo, enginebase
 \\
 \\ Outputs:
 \\     sndengine, sndturbo
@@ -440,14 +441,14 @@ NagLoops = 100
     LDX CarGear:BNE high
     LSR A:STA n
     LDA v:LSR A:LSR A:LSR A:LSR A:LSR A
-    CLC:ADC n:ADC #40:STA n             ; (under 256)
+    CLC:ADC n:ADC enginebase:STA n      ; (under 256)
     LDA #0
     BEQ set                             ; always
 .high
     LSR A:LSR A:LSR A:LSR A
     CLC:ADC v:STA n
     LDA #0:ADC #0:TAX
-    LDA n:CLC:ADC #40:STA n
+    LDA n:CLC:ADC enginebase:STA n
     TXA:ADC #0
 .set
     SEI                                 ; (the IRQ reads both bytes)

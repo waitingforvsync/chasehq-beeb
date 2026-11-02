@@ -590,3 +590,108 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   240,209 -> 224,511.
 - Release 5 (site commit 231fbc9, from c38a86e). That commit's message says the data bank has 2 more bytes
   free; it has 2 fewer (16,042 -> 16,044 bytes used since release 4).
+
+## 2026-11-01
+
+### The frame-rate review's last three patches, merged (decisions D15)
+- 01 `edge_table`, 06 the fork's lines and 07 the loader's tables (`work/review-frame/patches/`). 01 and 06
+  applied as they were; 07 with fuzz (its context was the routine before Times22, which 02 had changed; the
+  lines it removes matched).
+- bench.py against release 5 (`work/p10/`): IDENTICAL in all seven runs (window, pages, static, micro,
+  arrest, drive 1500, timeup 1200). The text code moved 30 bytes: msg_blank 63 cycles faster, msg_static 4
+  slower, by their page crossings. check_road.py: 0 of 600 differ on both branches.
+- jsbeeb, real IRQ, the demo rule (`work/p10/waits.mjs`): 300 loops 187,324 -> 183,867 cycles a loop mean
+  (4.691 -> 4.604 frames). 1,000 loops: 173,109 -> 170,746 mean, 165,300 -> 163,792 median, 90th
+  percentile 195,928 -> 193,319, 99th 233,177 -> 224,511 (the reviewer's figures exactly).
+- Code bank 566 -> 536 free: all 30 from the pad before RoadT (the code before it now ends at &A823), so the
+  bank's end and everything after RoadT keep their addresses. CodeVars 168 -> 140. Main RAM, the &259 gap
+  and the data bank unchanged.
+
+### LV2-LV5 decoded (docs/cpc-stages.md, `work/lv/`)
+- The generators run for every stage with no assert failing; stage 1's output is the build's, byte for byte.
+  Assembled into the game with the limits lifted and split into shared and own: each stage's own data 9,180
+  to 10,355 bytes (code bank at most 2,349, data bank 7,806, main RAM 727), the shared 11,095. With the build
+  as it is, stage 3 fits; 2 and 4 overflow main RAM by 9 and 20 bytes overall, 5 the data bank by 33.
+- The course (S3 along every branch): main legs of 320 (stage 1) and 400. Tunnels in stages 1, 2, 4 and 5:
+  **stage 1's at segments 588-691 on both branches, inside every chase**, drawn by the BBC as ordinary road.
+- Values stage 1 never produces: new layouts in every later stage (two-lane roads, right-hand tapers), object
+  id 2 as the gantry (left, stages 3 and 5), S6 codes 4, 5, 11 (handled) and 15, 17, 18 (the airborne
+  patrol). Curves and gradients: nothing new.
+- The airborne patrol (stages 2 and 4) decoded from `&31AC`-`&3304`: a helicopter (28 x 44 pixels and its
+  shadow, mirrored on odd loops) flown in with the message when the road says which way the criminal turned,
+  and out again later. 716 bytes of images a stage, from `(&5BDE)`/`(&5BE0)`, which the generators don't read.
+- The road model against the CPC's for stages 2-5, 600 loops each branch: stages 3, 4, 5 exact; stage 2's
+  differs in 3 loops, where the summed gradient is -128 (the CPC drops bit 7 of |C| in its multiply; the BBC
+  doesn't; fix found, not applied). Row 20's left anchor is 1 out in a few loops of every later stage (not
+  found yet), and three bounces differ, all near tunnels.
+- The CPC's inks are the same in every stage. The ram's score is fixed at stage 1's in `car.6502`; the
+  fork's and the bonuses already scale with Stage.
+
+### The tunnel (stage 1's, and stages 2, 4 and 5's): `src/tunnel.6502`, roaddraw, draw_objects (docs/cpc-road.md, Tunnels)
+- Decoded from `&4949`, `&4BB1`, `&4BFF` (the renderer's tunnel segments, drawn and hidden), `&44E1` (the state
+  after the road), `&455B`-`&4723` (the mouth) and `&4C70`/`&4D39` (backdrop and sky). Checked against the
+  running CPC (`work/tunnel/cpc_mouth.py`: stage 1's entrance from loop 819 of the bot's drive, inside from
+  843, the exit from 915). One misreading caught by the comparison: in `&44E1`'s in-tunnel path the `LD A,5`
+  for `&1770` is also the loop count, so the band goes at the first row from 4 to 8 where the road widens a
+  row on (else 9), not just rows 4/5.
+- The renderer: a tunnel segment takes lane line 3's table for its right edge, no lane lines, a third colour
+  set (its road from `&5BC7`, black walls; genroad's `FillTunnel`, and rumble and lane bytes for it); flat and
+  hidden segments carry its colours and mark an entrance's mouth two rows on (`hidden_flags`), as the CPC's.
+  With the tunnel beyond, no backdrop and a black sky (none of it counted as sky for the skip).
+- `tunnel_state` (in the data bank, called by draw_objects: it touches only main RAM): the mouth's row and
+  colours, or in a tunnel with none in view the black band; and the engine's tunnel note (enginebase 67 for
+  the CPC's + 500, sndatt 6 for its volume 11; the loader sets their first values).
+- `tunnel_mouth` (code bank, by a main-RAM stub from draw_objects at its row, after the row's cars): its band
+  beside the opening, across, then sky or black to the top, with the row runner.
+- **A bug found on the way, in draw_objects since the objects went in**: `LDA RoadSeg:CLC:ADC #WinObjects-1:ADC
+  r` carried into the row, so for RoadSeg 161-255 (right) and 129-255 (left) every roadside object was drawn a
+  row nearer than the CPC's. Now each side's base is worked out once a pass, mod 256.
+- Room: RoadT moved to the code bank's last page (genroad: `PADTO CodeVarsOrg - &100`), so its free bytes are
+  one block in front of it (the old pad before it was 221, and growing past it cost a page).
+- Known differences kept: a crest hiding an exit's second segment leaves the CPC's walls black under the normal
+  colours at the next full road; here they go back to grass. A mouth row with all its first part hidden by a
+  crest draws nothing there (the CPC's DJNZ would draw 256 lines; not seen).
+- Checked against the CPC (`work/tunnel/compare_tunnel.py`: lockstep with its bot, the playfields after the
+  road, the mouth and the roadside objects, no traffic in either; a pixel passes if it's one of its pen's D7
+  pair): every 4th loop of 1,060 (through the tunnel), the CPC's backdrop scroll given to the BBC: 135 of 265
+  exact, 99 with 1-3 pixels at the horizon line, the rest the criminal's flames (not ported, loops 232-240)
+  and the fork's lamp posts (loops 244-320, segments under 129: older than this). Every tunnel loop: the
+  mouth's state the CPC's in all 241.
+- Room: code bank 536 -> 10 free (all of it now in front of RoadT), data bank 148 free (+139: tunnel_state,
+  the hooks, RowYB 22), main RAM's code unchanged (enginebase and sndatt in place of immediates), the &259 gap
+  251 -> 237 (the stub), CodeVars unchanged, GameVars +7.
+- Cost (py65, loops 800-1059 of the CPC's drive, the 241 with a tunnel in view): road_draw 79,388 -> 85,301,
+  plot_objects 13,291 -> 39,164 (worst loop of the two 108,443 -> 136,394): the mouth's black over black
+  walls and sky, mostly. Other loops: +215 there; +49 a loop over the text bench's 1,060 (no tunnel).
+- jsbeeb, 1,000 loops of the demo rule: no crash through 112 tunnel loops (mean 191,644 cycles); the whole
+  run's mean 170,746 -> 176,361, but the drive diverges between builds (random numbers from a VIA timer), so
+  that's not the code's cost.
+
+## 2026-11-02
+
+### The tunnel's review (agent, `work/review-tunnel/`): seven patches merged
+- Merged, as faster and smaller together (code bank 10 -> 50 free, data bank 148 -> 146: p3 adds 3 there
+  for 15 less in the code bank):
+  - p0 `CodeDataOrg` (&A65F): the code bank's data fixed there with a PADTO, so code changes stop moving the
+    tables (p1 alone had put RumbleB across &B200, +164 cycles a loop). The binary is unchanged by it.
+  - p1 `tunnel_mouth` as one line loop for all three parts: the left band's RTS patched once a part, the
+    line's colour from X's parity, X counted down. -23 bytes; tunnel loops -3,201.
+  - p2 road_done tests TunnelBeyond alone (an entrance seen always sets it). -8 bytes, 12 cycles a loop.
+  - p3 `hidden_flags`/`tunnel_flags` by `ASL A:BCS:BPL`, MouthKind the segment's flags (bit 4 an exit).
+  - p4 draw_objects: the mouth's row a bit in its RowCars entry, not a compare every row; the window index
+    stepped down with the row. Bench -232 a loop.
+  - p6 comments; p8 the backdrop loop back in one page (the tunnel's bytes had pushed its BNE across &9700,
+    a cycle a backdrop line). Bench -315 a loop.
+- Measured by the reviewer (py65): the bench's 1,060 loops 167,273 -> 166,718 mean; the tunnel's loops
+  -3,558 (entrance -2,993, inside -2,662, exit -4,107); worst loop of road_draw + plot_objects 136,394 ->
+  129,720. jsbeeb, 1,000 loops, real IRQ: no crash (126 tunnel loops, mean 185,557; the drive diverges).
+- Exact, by the reviewer: the playfields, SkyTop and the tunnel's and engine's state identical in all 260
+  lockstep loops; the bench's panel, playfields and Rng in all 1,060; bench.py IDENTICAL in all seven runs;
+  1,446 pictures with cars on and round the mouth's row identical. Here: the merged source is the reviewer's
+  rule-set tree and the disc byte for byte the same (title aside); compare_tunnel.py 25 of 241 tunnel loops
+  differ, the same 25 as before; check_road.py 0 of 960, the anchors in the same 3 loops. Loop 895's 38
+  pixels (in both) are one of those: rows 12-15's anchors.
+- Held for Rich (decisions P11): p5 (+3 bytes, -173 a tunnel loop) and p7, road_draw skipping what the mouth
+  covers (+42 bytes, entrance -9,924, exit -7,825, other loops +17).
+- Found, not done: 2,373 of the mouth's 2,423 stores a loop inside the tunnel leave black on black, but no
+  cheap exact test; tunnel_mouth could go in the &259 gap (about 200 bytes) if main RAM had room.

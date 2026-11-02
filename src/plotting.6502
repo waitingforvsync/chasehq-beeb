@@ -18,6 +18,22 @@
     RTS
 }
 
+\\ The tunnel's mouth (tunnel_mouth, in the code's bank) for draw_objects, the code's bank paged in for it.
+\\
+\\ Inputs:
+\\     A: the row's line (RowYB)
+\\
+\\ Outputs:
+\\     A, X, Y: corrupted
+
+.draw_mouth
+{
+    LDX bankcode:STX &FE30              ; ROMSEL: the code's bank
+    JSR tunnel_mouth
+    LDX bankdata:STX &FE30              ; ROMSEL: the data's back
+    RTS
+}
+
 \\ The roadside objects (draw_objects, in the data's bank), the data's bank paged in for them.
 \\
 \\ Inputs:

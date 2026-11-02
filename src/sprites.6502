@@ -237,6 +237,55 @@ NEXT
 .StepLo                                 ; the plotter's steps
     EQUB LO(sprite_draw.steps + 7 * (0..7))
 
+\\ The tunnel after the road (the CPC's &44E1): a mouth road_draw saw, at its row, an entrance's band dark red
+\\ with the sky above it (the tunnel beyond), an exit's black with black above; or in a tunnel with none in
+\\ view, a black band at the first row from 4 to 8 where the road widens a row on, else 9 (the far end's
+\\ dark), and the engine's tunnel note (the CPC's &1770, read at the next loop's start), left as it was while
+\\ a mouth is in view. In the data's bank for the room: it reads and writes only main RAM.
+\\
+\\ Inputs:
+\\     MouthKind, MouthAt, TunnelBeyond; RowXL, RowXR (road_rows)
+\\
+\\ Outputs:
+\\     MouthRow, MouthBand, MouthAbove
+\\     enginebase, sndatt: the engine's (its volume from the IRQ's next frame, its note from the next
+\\     loop's sound_update; the CPC's both from its next loop)
+\\     A, X: corrupted
+
+.tunnel_state
+{
+    LDA MouthKind:BEQ none
+    AND #&10:LSR A:LSR A:LSR A          ; (an entrance's 0, an exit's 2: its flags' bit 4)
+    STA MouthBand
+    LDA TunnelBeyond:ASL A:ADC #2       ; (C clear: the sky, 4, above an entrance; black, 2, above an exit)
+    STA MouthAbove
+    LDA MouthAt:STA MouthRow
+    RTS
+.none
+    LDA TunnelBeyond:BNE inside
+    STA MouthRow                        ; (no tunnel)
+    LDA #EngineBase:STA enginebase
+    LDA #EngineAtt:STA sndatt
+    RTS
+.inside
+    LDA #EngineTunnelBase:STA enginebase
+    LDA #EngineTunnelAtt:STA sndatt
+    LDA #2:STA MouthBand
+    LDA #6:STA MouthAbove
+    LDX #4
+.scan
+    LDA RowXLLo+1,X:CMP RowXLLo,X       ; the left edge further left a row on, or the right further right
+    LDA RowXLHi+1,X:SBC RowXLHi,X       ; (unsigned, as the CPC's): the band at this row
+    BCC row
+    LDA RowXRLo,X:CMP RowXRLo+1,X
+    LDA RowXRHi,X:SBC RowXRHi+1,X
+    BCC row
+    INX:CPX #9:BNE scan
+.row
+    STX MouthRow
+    RTS
+}
+
 \\ The roadside objects, rows 20 to 1, far to near: each row's right object, then its left (the CPC's
 \\ &238C's). An object stands on its row's line, or the crest's in front where that's higher; its parts are
 \\ stacked up from there, tiled ones as tall as their share of the row's scale.
@@ -253,6 +302,9 @@ NEXT
     ZA_AUTO1 r                          ; local: the row, 20 down to 1
     ZA_AUTO1 yb                         ; local: the lowest line of the rows from 1 out to here
     ZA_AUTO1 cars                       ; local: the row's cars left, a bit each
+    ZA_AUTO1 win                        ; local: the row's right object's place in the window (the left's &20 on)
+
+    JSR tunnel_state
 
     \\ RowYB: the line a row's objects stand on, the higher of its own and those in front (a crest hides
     \\ what's behind it)
@@ -265,7 +317,19 @@ NEXT
     STA yb
 .@
     LDA yb:STA RowYB,X
-    INX:CPX #21:BNE crest
+    INX:CPX #22:BNE crest               ; (row 21's for the tunnel's mouth)
+
+    \\ the tunnel's mouth: beyond the rows, now; or bit 1 of its row's RowCars, out of the cars' ASLs after
+    \\ theirs (row 0's, for none or once drawn, never read); rows 22 and 23 never (a hidden entrance's)
+
+    LDY MouthRow
+    CPY #21:BCC mark
+    BNE marked
+    LDA RowYB+21:JSR draw_mouth
+    LDY #0
+.mark
+    LDA #2:STA RowCars,Y                ; (rows 1-20 clear till the slots' bits go in)
+.marked
 
     \\ RowCars: each row's cars, slot k at bit k + 2 (slot 5 out of an ASL first); each row's left clear for
     \\ the next frame
@@ -277,29 +341,34 @@ NEXT
 .@
     DEX:BPL slots
 
-    LDA #20:STA r
+    LDA RoadSeg:CLC:ADC #WinObjects+19:STA win      ; (mod 256, the window a ring: a carry into the row
+    LDA #20:STA r                                   ; would read the next one, as it once did)
 .row
-    LDY r:LDA RowCars,Y:BEQ objects     ; the cars on the row first, slot 5 down
+    LDY r:LDA RowCars,Y:BEQ objects     ; the cars on the row first, slot 5 down, then the mouth
     STA cars
     LDA #0:STA RowCars,Y
     LDX #MaxObjects-1
 .car
     ASL cars:BCC @+
+    TXA:BMI mouth                       ; (bit 1: the mouth, after the row's cars)
     STX carslot
     JSR one_car
     LDX carslot
 .@
     DEX
     LDA cars:BNE car
+    BEQ objects                         ; always
+.mouth
+    LDY r:LDA RowYB,Y:JSR draw_mouth    ; (over the row's cars and what's beyond, under its objects)
 .objects
-    LDA RoadSeg:CLC:ADC #WinObjects-1:ADC r:TAY
-    LDA RoadWindow,Y:BEQ @+             ; the right side's object
+    LDY win:LDA RoadWindow,Y:BEQ @+     ; the right side's object
     LDX #0:JSR one_object
 .@
-    LDA RoadSeg:CLC:ADC #WinObjects+&20-1:ADC r:TAY
+    LDA win:CLC:ADC #&20:TAY
     LDA RoadWindow,Y:BEQ @+             ; the left side's
     LDX #10:JSR one_object
 .@
+    DEC win
     DEC r:BNE row
     RTS
 
@@ -494,8 +563,8 @@ ZA_AUTO1 carslot                        ; local to draw_objects: the slot being 
     EQUB HI(tile_height.k075), HI(tile_height.k025), HI(tile_height.k1), HI(tile_height.k2)
 
 SECTION GameVars
-.RowYB                                  ; each row's line for its objects (crests in front)
-    SKIP 21
+.RowYB                                  ; each row's line for its objects (crests in front), rows 1-21
+    SKIP 22
 ENDSECTION
 
 .SlotBit                                ; slot k's bit in RowCars

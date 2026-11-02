@@ -9,6 +9,8 @@
 \\ the turbo's whoosh, or an effect's.
 
 ZA_AUTO2 sndengine                      ; in: the engine's tone 3 period (sound_update)
+ZA_AUTO1 sndatt                         ; in: its attenuation (tunnel_state; the loader's first)
+ZA_AUTO1 enginebase                     ; in: its period's base (tunnel_state; the loader's first)
 ZA_AUTO1 sndturbo                       ; in: the turbo's noise period, the CPC's, 59 down (0: none)
 ZA_AUTO1 fxreq                          ; in: an effect asked for (0 none): the IRQ takes it
 ZA_AUTO1 fxreqprio                      ; in: its priority, lower winning
@@ -16,6 +18,9 @@ ZA_AUTO2 fxptr                          ; the effect playing: its next frame (hi
 ZA_AUTO1 fxprio                         ; and its priority
 
 EngineAtt = 3                           ; the engine's attenuation (the CPC's volume 13)
+EngineTunnelAtt = 6                     ; in a tunnel (its 11)
+EngineBase = 40                         ; its period's base (the CPC's 300: 2/15 of it)
+EngineTunnelBase = 67                   ; in a tunnel (its 500)
 TurboAtt = 6                            ; the whoosh's (its 11)
 NoiseTone3 = 3                          ; noise control: periodic, clocked by tone 3
 WhiteTone3 = 7                          ; white, clocked by tone 3
@@ -92,7 +97,7 @@ FxEnd = &FF
     LDA sndengine:STA tone3
     LDA sndengine+1:STA tone3+1
     LDA #NoiseTone3:STA noisectl
-    LDA #EngineAtt:STA noiseatt
+    LDA sndatt:STA noiseatt
     LDA #15:STA tone2att
     LDA #&FF:STA tone2:STA tone2+1      ; (silent: whatever was written stays)
 
