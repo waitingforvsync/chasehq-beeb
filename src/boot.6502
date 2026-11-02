@@ -1,10 +1,11 @@
 \\ boot.6502 - !BOOT, *RUN by SHIFT-BREAK (*OPT 4,2): finds the sideways RAM, unpacks each bank's file into
 \\ its bank, loads CHASE2 and runs it. The OS stays alive; this file is assembled on its own.
 
-bankcode = &00                          ; the banks found, for the game (memory.6502's): the code's and
-bankdata = &01                          ; the data's (BASIC's zero page, written once nothing can fail);
-bankspeech = &02                        ; the speech's, if there's a third (&FF: none, no speech)
-BanksNeeded = 2
+bankcode = &00                          ; the banks found, for the game (memory.6502's): the code's, the
+bankdata = &01                          ; data's (BASIC's zero page, written once nothing can fail)
+bankstore = &02                         ; the store's (the text, the packed speech) and the
+bankstages = &03                        ; stages' (each stage packed)
+BanksNeeded = 4
 
 BootOrg = &1200                         ; in the DFS's file buffers: no files are open
 BankLoad = &3000                        ; where a bank's packed file loads, to be unpacked
@@ -25,8 +26,7 @@ ZA_POOL &70..&8F                        ; the OS leaves these to us
 .boot_entry
 {
     ZA_ENTRY
-    ZA_AUTO BanksNeeded, banks          ; local: the banks found, as bankcode and bankdata
-    ZA_AUTO1 speech                     ; local: a third, for the speech (&FF: none)
+    ZA_AUTO BanksNeeded, banks          ; local: the banks found, as bankcode on
 
     LDA #15:LDX #0:JSR &FFF4            ; OSBYTE 15: the BREAK beep flushed
     LDA #16:LDX #0:JSR &FFF4            ; OSBYTE 16: the ADC off
@@ -57,20 +57,6 @@ ZA_POOL &70..&8F                        ; the OS leaves these to us
     ZA_UNREACHABLE                      ; the BRK doesn't come back
 .found
 
-    \\ a third, if there is one, for the speech (the game plays without it)
-
-    LDA #&FF:STA speech
-.more
-    DEX:BMI loaded
-    LDA &2A1,X:BNE more                 ; the OS's ROM type table: one it knows
-    STX &F4:STX &FE30                   ; ROMSEL: bank X at &8000
-    LDA &8000:EOR #&FF:STA &8000
-    EOR #&FF:CMP &8000                  ; Z: it didn't take
-    STA &8000
-    BEQ more
-    STX speech
-.loaded
-
     \\ each bank's file loaded at BankLoad (its catalogue's address, so OSFILE's write-back leaves the block
     \\ ready for the next) and unpacked into its bank
 
@@ -85,17 +71,6 @@ ZA_POOL &70..&8F                        ; the OS leaves these to us
         LDA #HI(&8000):STA zx.dst+1
         JSR zx.unpack
     NEXT
-    LDA speech:BMI nospeech
-    LDA #LO(SpeechName):STA OsfileBlock
-    LDA #HI(SpeechName):STA OsfileBlock+1
-    LDA #&FF:LDX #LO(OsfileBlock):LDY #HI(OsfileBlock):JSR &FFDD ; OSFILE: load
-    LDA speech:STA &F4:STA &FE30        ; ROMSEL: the speech's bank
-    LDA #LO(BankLoad):STA zx.src
-    LDA #HI(BankLoad):STA zx.src+1
-    LDA #LO(&8000):STA zx.dst
-    LDA #HI(&8000):STA zx.dst+1
-    JSR zx.unpack
-.nospeech
     PLA:STA &F4:STA &FE30               ; ROMSEL: the ROM back
 
     \\ CHASE2 loaded at its own address (exec's low byte non-zero), then the banks handed over and it run
@@ -108,7 +83,6 @@ ZA_POOL &70..&8F                        ; the OS leaves these to us
     FOR i = 0..BanksNeeded-1
         LDA banks+i:STA bankcode+i
     NEXT
-    LDA speech:STA bankspeech
     JMP (OsfileBlock+6)                 ; CHASE2's entry
     ZA_CANJUMP Chase2Load               ; (another assembly's code, in the file loaded there)
 }
@@ -116,9 +90,9 @@ ZA_POOL &70..&8F                        ; the OS leaves these to us
 .BankNames                              ; the banks' files, each 6 letters and a CR
     EQUS "CHASEC", 13
     EQUS "CHASED", 13
-    ASSERT P% - BankNames == BanksNeeded * 7, "a name for each bank"
-.SpeechName
     EQUS "CHASES", 13
+    EQUS "CHASEL", 13
+    ASSERT P% - BankNames == BanksNeeded * 7, "a name for each bank"
 .Chase2Name
     EQUS "CHASE2", 13
 .OsfileBlock                            ; OSFILE's block: the name, then the load address

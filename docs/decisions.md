@@ -100,6 +100,62 @@ Rich: "go ahead and merge P10" (P10: 01, 06 and 07 together; not 08, the backdro
 - Code bank 566 -> 536 free (all 30 from the pad before RoadT: the code before it now ends 35 bytes past
   &A800; the bank's end unchanged), CodeVars 168 -> 140, main RAM and the data bank unchanged.
 
+### D16. The tunnel review's p5 and p7 too (2026-11-02; was P11)
+Rich: "yes do p5 and p7".
+- p5: the mouth's line parity toggled with `TYA:EOR #1:TAY`. +3 code bank bytes, -173 cycles a tunnel loop.
+- p7: road_draw doesn't draw what the mouth will cover (the sky, and the road under the band across). +42
+  code bank bytes; entrance loops -9,924, exit -7,825, inside +10, every other loop +17.
+- With the rest of the review: worst loop of road_draw + plot_objects 129,720 -> 125,209 (py65). Code bank 50
+  -> 5 free in front of its data (10 more before RoadT). compare_tunnel.py: the same 25 of 241 tunnel loops
+  differ as before; check_road.py 0 of 960.
+
+### D17. 64K of sideways RAM, no multi-load: the speech and every stage kept packed (2026-11-02; for D4)
+Rich asked: "If we were to move to a full 64k of sideways ram, could we do without the multiload?" Offered
+the measurements below and the options (64K with no multi-load; a multi-load from disc as P5; deciding after
+measuring LV6), he chose "64K, no multi-load".
+- The speech packs 16,230 -> 3,924 bytes, each phrase on its own with the build's ZX02 (84% of its samples
+  are silent). A phrase unpacks into the hidden playfield before it plays: 125,723 / 250,893 / 127,617 /
+  137,551 / 127,873 cycles for phrases 1-5 (63-125 ms; py65, the game's decoder, checked byte for byte).
+  The game is stopped while it speaks anyway.
+- Each stage's own data, packed by bank (code, data, main RAM): 4,656 / 4,793 / 4,150 / 4,399 / 5,090 =
+  23,088. A stage unpacks over its slots at its start, about 0.23 s.
+- In banks 3 and 4 together: 27,012 of 32,768, so 5,756 left for the helicopter's images, the gantry, LV6
+  and the title (not measured yet). If LV6 or the title don't fit, they load from disc between games.
+- Supersedes D4's multi-load; P5 and P7 (the speech bank) no longer apply.
+
+### D18. Main RAM is ours down to the stack, small routines in its low gaps (2026-11-02)
+Rich: "Note that with no multi-load, we are now free to use main RAM all the way down to the top of a reduced
+stack (minus &204,&205,&258,&D00)". And: "I recommend trying to fit small routines into those low areas of
+main ram, between the bytes that can't move".
+- The stack is &101-&120 (its sentinel at &100) and main RAM's code starts at &121. The gaps between the fixed
+  bytes now: 19 at &1F1 (before IRQ1V), 82 at &206-&257 (MainVars, declared but never used) and 27 at &CE5
+  (the end of the &259 gap, the speech player having moved in).
+- New small routines go into the gaps first; cold routines move in when a gap would otherwise stay empty.
+- Rich: "Remember to reduce the stack to whatever size is safe. I would think 64 bytes is more than enough.
+  i.e. starting the code at &140". The stack is already 32 bytes (&101-&120, code from &121). Measured
+  (jsbeeb, real IRQ, 1,000 loops of the demo rule, the free part filled with &A5 at the loop's top): the
+  deepest byte used &10C, 21 of the 32; the sentinel untouched. A re-entrant rupture and a speech IRQ (O1)
+  would add a few bytes a level.
+
+### D19. Room for the stage slots: the text code to the store, data-bank code to main RAM (2026-11-02; P12)
+Asked where the code bank's and the data bank's shortfalls should come from (the slots sized for the largest
+stage need about +250, +320 and +470 bytes in the code bank, data bank and main RAM), Rich chose, for the code
+bank: "Do 1 (Text code to the store) but also consider whether glyphs can be bit depth reduced or otherwise
+compressed"; option 1 was the message and page code (about 1.3K, with the popup's clear) in the store's bank
+behind main RAM stubs, about 20 cycles a call. For the data bank: "Data-bank code to main RAM" (code that runs
+with the data bank paged, at the same speed there).
+- Refined: only msg_update and page_draw (and what they call) read the text's data; msg_request,
+  page_request and text_new_game touch main RAM alone and stay there. So two stubs; flow's page figures
+  (PageContinueTime, PageBonus*) written with the store paged; the stage's own text in a slot in the store's
+  bank, not main RAM. The &259 gap's 2,448 bytes of text data (Font1 656, two faces 640, scripts and pages)
+  go to the store with the code, leaving the store about 1.1K spare with the stages and speech.
+- The glyphs (2026-11-02): Font1's lines mix white with one to three shading colours (254 of 328 glyph lines
+  have two or more), so not 1 bit a pixel. It has 22 distinct bytes, the 6 rarest used 10 times in all:
+  with those 10 bytes changed to near ones, a 4-bit code a byte would halve it (656 -> 328) for a table
+  look-up a byte drawn. Each face has 14 distinct bytes: a 4-bit code halves it losslessly (320 -> 160), for
+  a look-up a byte when a face is drawn (once a message). Rich: "we can note that maybe there's scope for
+  glyph compression if we need it, for now let's continue with the next step".
+
 ---
 
 ## Proposed
@@ -128,6 +184,7 @@ A CPC reference harness on SkoolKit's C simulator. The BBC's game logic is check
 frame by frame. The harness also logs every plot, as the benchmark for the BBC's renderers.
 
 ### P5. If it comes to a multi-load: swap the OS's memory back in, rather than reserve it
+Superseded by D17 (no multi-load).
 Deferred with D4. Reserving costs zero page `&A0`-`&FF` and 3.75K of main RAM (`&0200`-`&10FF`) for the whole
 game. Swapping costs about 4K of saved state in a bank. The loader saves the OS's state just before the
 takeover. Between stages the game's bytes go into the free playfields and the OS's come back; OSFILE loads
@@ -146,6 +203,7 @@ tables (the lane lines, the roadside bounds). Main RAM left: about 1.9K at `&200
 `chasehq.6502`.
 
 ### P7. Speech: a third bank, played from main RAM with the frame IRQ quiet (2026-10-31, Claude; for O1)
+The bank superseded by D17 (the speech kept packed); the player as described.
 The phrases fill one bank (16,230 bytes), so they go in a third bank when there is one, and the game plays
 silent when there isn't (BanksNeeded stays 2). `speak` runs in main RAM, the game stopped meanwhile as the
 CPC's is: a timed loop writing tones 1 and 2's attenuations (period 1, a steady level to shape), about 209
@@ -167,16 +225,27 @@ that gap, go in the code bank instead. Left: the code bank about 570 bytes, main
 GameVars, the gap 288, the data bank about 300. The dissolve's masks (316 bytes) and the rest of the game's
 flow will need room: the title and the stage intro may want an overlay or a bank of their own.
 
-### P11. The tunnel review's two trades: p5 and p7 (2026-11-02, Claude)
-In `work/review-tunnel/patches/`, on top of the merged rule set (p0-p4, p6, p8). Both cost code bank bytes,
-of the 50 now free in front of the data.
-- p5: the mouth's line parity toggled with `TYA:EOR #1:TAY`, not worked out each line. +3 bytes, -173 cycles
-  a tunnel loop, nothing elsewhere.
-- p7: road_draw doesn't draw what the mouth will cover (the sky, and the road under the band across). +42
-  bytes; entrance loops -9,924, exit -7,825, inside +10, every other loop +17.
-- Both: worst loop 129,720 -> 125,209 (py65, road_draw + plot_objects). Exact by the reviewer's checks: the
-  picture after the objects identical in all 260 lockstep loops, the bench's 1,060.
-Recommended: p7, as the tunnel's loops are the worst; p5 only if the bytes are there.
+### P12. The stage switch: fixed slots, every stage unpacked from the store (2026-11-02, Claude; for D17)
+- Each bank's own part of a stage (code bank: the road's tables, streams, backdrop and colours; data bank: the
+  sprite tables, object parts and the stage's sprites and cars; main RAM: its briefing, arrest page, face and
+  airborne messages) goes in a slot at a fixed address, sized for the largest stage. Its tables come first at
+  fixed addresses, the size of the largest stage's (SprW etc.: 142 entries); what varies (streams, parts,
+  images) follows, reached only through those tables. The four stage constants used as immediates
+  (CrimDodgeGap, CrimSprintGap, TrafficGap, StageStartX) become a small header read at their uses. Font1
+  holds the glyphs of every stage's text.
+- The generators run over all five stages and write the shared data and each stage's slots; each slot is a
+  nested section rephased to its slot's address and packed into the store (banks 3 and 4), stage 1's too.
+  The slots in the bank images are then empty, and a game's start unpacks stage 1 like any other.
+- Unpacking: the decoder runs in the store's bank, so a slot in the code or data bank is unpacked into a
+  playfield and copied up by a loop in main RAM; the main RAM slot is unpacked straight into place.
+- Room (from the LV2-LV5 builds, not yet exact): the slots' largest stages against stage 1's need about +250
+  bytes in the code bank, +320 in the data bank (+140 of it the sprite tables at 142 entries) and +470 in main
+  RAM, plus the switch's code. Free now: 15, 146, and in main RAM 388 at its end, 256 more if GameVars moves
+  up a page, and D18's 128 in the low gaps. So the code and data banks need about 250 and 180 more:
+  - code bank: move code that needs the bank paged but not its place there into main RAM (the code bank is
+    paged in everywhere outside the sprite stubs, so it runs as fast), or into the store with stubs;
+  - data bank: the player's car drawn mirrored instead of stored twice (3,689 bytes; its cycles not yet
+    measured), or the tiled bands split at the repeat (266 bytes for about 1,300 cycles a loop).
 
 ---
 
@@ -185,6 +254,32 @@ Recommended: p7, as the tunnel's loops are the worst; p5 only if the bytes are t
 ### O1. How to play the speech
 The CPC plays a phrase with everything else stopped. On the BBC the rupture's IRQ must keep running: play in
 the main loop and accept the IRQ's jitter, or play from User VIA T1.
+- Now (P7's player): the main loop's timed loop, 414 cycles a byte (two samples) in jsbeeb. The rupture's
+  IRQs delay 19 of 400 bytes by 72-87 cycles (2026-11-02, `work/store/bytetime.mjs`).
+- Rich (2026-11-02): "we will have to try how best to do the speech player, as we can't turn off IRQs (we need
+  them for the rupture). Maybe it needs to be a top priority interrupt (first one serviced) from User VIA T1.
+  We might also need to make the rupture reentrant, turning on IRQs by wrapping the reentrant part with LDA
+  &FC:PHA:CLI.... SEI:PLA:STA &FC... we should keep the keyboard autoscan on so it doesn't conflict with the
+  sound chip, other than during the IRQ routine which reads the keys, in which we will need to turn IRQs off."
+  And: "The advantage of servicing the sampled speech in interrupts is that we don't need to pause the game.
+  But we will have to try things and see what works". And: "Possibly the samples can be done in the same way
+  as Exile, using PWM (look at the disassembly). I think this uses variable timing between samples. It can
+  also play on multiple channels at once for more volume. But it may be worse quality".
+- Exile's player (github.com/tom-seddon/exile_disassembly, `exile.6502` from line 9969 and its IRQ at
+  M129B): 1-bit samples as runs, a byte (silent n, on m) in nibbles, or with its low nibble 15 one silent
+  run of 15-255; 0 ends it. A unit is 128 us (7,812 Hz). One User VIA T1 interrupt a run: it writes the next
+  volume to tone 3 (period 1, a steady level), the on volume scaled by the object's distance, then reloads
+  T1 with the next run (`delay << 7`) and decodes the next byte. The game runs on; tone 3 is booked for it.
+  The IRQ tests the system VIA first, then T1; nothing is re-entrant.
+- Our phrases that way (2026-11-02, at our 103.5 us unit): 4,614 bytes for all five (ZX02 of the 4-bit
+  samples 3,924), about 2,300-2,900 interrupts a second. 52% of the loud samples are at full volume already;
+  the rest, spread over nine levels, would all play at one. Keeping the levels, as runs of one level: about
+  9,000 runs (2,400-2,900 a second), about 10,000 bytes at a byte a run.
+- If the game runs on, the hidden playfield can't hold the phrase (D17's unpack): the IRQ would read it from
+  the store's bank, or decode it as it goes. Measured (2026-11-02): 84% of the 32,460 samples are silent, in
+  4,306 runs (the longest 546 samples). Loud samples as nibble pairs and a byte a silent run (one T1 period
+  each) come to about 6,910 bytes for all five phrases (ZX02: 3,924); phrase 2 would take about 3,100
+  interrupts over its 1.1 s, against 10,700 at one a sample.
 
 ### O2. Previews of the colours
 D7 fixes each pen's pair. Real frames rendered with it may still show pens worth changing by hand.

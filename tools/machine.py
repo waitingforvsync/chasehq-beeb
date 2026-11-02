@@ -5,8 +5,9 @@
     m.call('road.frame')           # a routine by symbol (or address), run to its RTS
     m.mem[a]                       # main RAM (and the paged bank at &8000)
 
-Banks are paged by writes to ROMSEL (&FE30), its value the bank's index here (0 code, 1 data): bankcode
-and bankdata are set to 0 and 1. py65 never runs the IRQ: anything timed is jsbeeb's.
+Banks are paged by writes to ROMSEL (&FE30), its value the bank's index here (0 code, 1 data, 2 the store,
+3 the stages): bankcode, bankdata, bankstore and bankstages are set to 0-3. py65 never runs the IRQ: anything
+timed is jsbeeb's.
 """
 import json
 import os
@@ -97,11 +98,22 @@ def symbols(path=os.path.join(BUILD, 'chasehq.json')):
     return syms
 
 
+def store_labels(path=os.path.join(BUILD, 'chasehq.json')):
+    """The labels in the store's bank (SwramStore): its routines and the text's data."""
+    out = set()
+    for asm in json.load(open(path))['assemblies']:
+        for section in asm['sections']:
+            if section.get('name') == 'SwramStore':
+                out.update(section.get('labels') or {})
+    return out
+
+
 class Machine:
     """py65 over 64K, the banks paged in at &8000 by writes to ROMSEL."""
 
     def __init__(self, ssd=os.path.join(BUILD, 'chasehq.ssd')):
         self.syms = symbols()
+        self.store = store_labels()
         files = ssd_files(ssd)
         self.banks = [bytearray(unzx02(files[n][2])[0].ljust(0x4000, b'\0')) for n in ('CHASEC', 'CHASED')]
         self.ram = bytearray(0x10000)
@@ -112,6 +124,10 @@ class Machine:
             a = self.syms[org]
             self.ram[a:a + len(body)] = body
         self.ram[0], self.ram[1] = 0, 1                 # bankcode, bankdata
+        for i, n in ((2, 'CHASES'), (3, 'CHASEL')):     # bankstore and bankstages, if the build has them
+            if n in files:
+                self.banks.append(bytearray(unzx02(files[n][2])[0].ljust(0x4000, b'\0')))
+                self.ram[i] = i
         self.paged = 0
         self.ram[0x8000:0xC000] = self.banks[0]
         mem = ObservableMemory(subject=self.ram)
@@ -135,7 +151,15 @@ class Machine:
         return name if isinstance(name, int) else self.syms[name]
 
     def call(self, name, a=0, x=0, y=0, max_steps=5_000_000):
-        """Run a routine to its RTS. Returns the cycles it took."""
+        """Run a routine to its RTS (one in the store's bank with it paged in, as its stubs do). Returns the
+        cycles it took."""
+        if name in self.store:
+            back = self.paged
+            self._romsel(0xFE30, 2)
+            try:
+                return self.call(self.syms[name], a, x, y, max_steps)
+            finally:
+                self._romsel(0xFE30, back)
         mpu = self.mpu
         mpu.a, mpu.x, mpu.y = a, x, y
         mpu.sp = 0xFF
@@ -151,11 +175,18 @@ class Machine:
             mpu.step()
         raise RuntimeError(f'{name}: no RTS within {max_steps} steps, PC &{mpu.pc:04X}')
 
-    def peek(self, name, n=1):
+    def _mem(self, name):
+        """The memory a name's in, and its offset there: the store's bank's own copy unless it's paged."""
         a = self.addr(name)
-        return bytes(self.ram[a:a + n]) if n > 1 else self.ram[a]
+        if name in self.store and self.paged != 2:
+            return self.banks[2], a - 0x8000
+        return self.ram, a
+
+    def peek(self, name, n=1):
+        m, a = self._mem(name)
+        return bytes(m[a:a + n]) if n > 1 else m[a]
 
     def poke(self, name, data):
-        a = self.addr(name)
+        m, a = self._mem(name)
         data = bytes([data]) if isinstance(data, int) else bytes(data)
-        self.ram[a:a + len(data)] = data
+        m[a:a + len(data)] = data

@@ -1,0 +1,4 @@
+\\ stages.6502 - the stages' bank (the fourth): each stage's own data packed (decisions D17, P12), unpacked
+\\ over the slots at its start. Empty for now: !BOOT finds and loads it, so the game needs its 64K.
+
+    EQUB 0                              ; (a byte, so the file isn't empty)

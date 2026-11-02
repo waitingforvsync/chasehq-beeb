@@ -128,9 +128,6 @@ ENDSECTION
     JSR crim_start
     JSR flow_start
     JSR text_stage
-    LDA bankspeech:BPL @+
-    MESSAGE MsgStart, MsgStartPrio      ; (no speech: the 64K CPC's words in its place)
-.@
     JMP panel_start
 }
 

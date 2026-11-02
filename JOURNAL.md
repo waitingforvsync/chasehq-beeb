@@ -691,7 +691,62 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   rule-set tree and the disc byte for byte the same (title aside); compare_tunnel.py 25 of 241 tunnel loops
   differ, the same 25 as before; check_road.py 0 of 960, the anchors in the same 3 loops. Loop 895's 38
   pixels (in both) are one of those: rows 12-15's anchors.
-- Held for Rich (decisions P11): p5 (+3 bytes, -173 a tunnel loop) and p7, road_draw skipping what the mouth
-  covers (+42 bytes, entrance -9,924, exit -7,825, other loops +17).
+- p5 and p7 merged after (decisions D16): code bank 50 -> 5 free in front of its data. The source is the
+  reviewer's final tree and the disc the same byte for byte (title aside). compare_tunnel.py: the same 25 of
+  241 tunnel loops differ; check_road.py 0 of 960. The reviewer's figures for all nine: tunnel loops -9,218 a
+  loop against before the review (entrance -13,085, exit -12,131, inside -2,777), the bench -538, worst loop
+  of road_draw + plot_objects 136,394 -> 125,209.
 - Found, not done: 2,373 of the mouth's 2,423 stores a loop inside the tunnel leave black on black, but no
   cheap exact test; tunnel_mouth could go in the &259 gap (about 200 bytes) if main RAM had room.
+
+### The speech kept packed in the store's bank (decisions D17, D18)
+- Rich chose 64K with no multi-load (D17) once the speech turned out to pack 16,230 -> 3,924 bytes, each phrase
+  on its own (84% of its samples are silent). The third bank is now the store (CHASES, `src/store.6502`): the
+  ZX02 decoder (129 bytes, `storezx`) and the five packed phrases (genspeech's `speechstore.6502`, a nested
+  section each), 4,053 bytes. The stages go there next, and into a fourth bank.
+- `speak` (now `src/speak.6502`, in the &259 gap: Rich's D18) waits for the flip, unpacks the phrase into the
+  hidden playfield from the store's bank, zeroes SkyTop and SkyOther, and plays it from there.
+- jsbeeb (B-DFS1.2, real IRQ, from boot): the chip's writes identical for the start's phrase 5 (11,128) and
+  the stage's phrase 3 (10,608). speak to the first sample: 2,000 -> 132,000-134,000 cycles (the unpack: 66
+  ms). The playfield after the stage's phrase is drawn whole.
+- The old play loop's `BNE byte` crossed a page, a cycle a byte, and the sample period was tuned with it: 414
+  cycles a byte in jsbeeb (207 a sample, the CPC's 414 T). In one page (SAME_PAGE now) it measured 412, so a
+  NOP keeps it at 414 (381 of 400 bytes; the mean 416.5 -> 416.7 with the IRQs).
+- Room: main RAM's code 9,749 -> 9,563 bytes (388 free before GameVars, was 202); the &259 gap 237 -> 26 free.
+  Net main RAM +25. The disc 26,880 -> 27,392 bytes (CHASES packed 3,372 -> 4,036). The logic moved 186 bytes
+  down: py65 loop mean 176,424 -> 176,407 (panel_update +12, flow_update -11, car_collide -9).
+- bench.py against the tunnel review's final build: window, pages, static, micro, arrest and drive IDENTICAL
+  (screens, Rng, text). The time-up run first differed from loop 902, its phrase: the harness left bankstore
+  0, so py65's speak paged in the code bank and ran its bytes as the decoder. `tools/machine.py` now loads
+  CHASES as a third bank (bankstore 2; &FF with none), so speak runs in py65 too: time-up and arrest then
+  IDENTICAL on both builds, the phrase unpacked into the hidden playfield and drawn over the next loop.
+
+### The text in the store, and a fourth bank (decisions D19; Rich's fourth bank)
+- The message window's and the pages' drawing (`src/text.6502`: msg_loop and page_loop, as were msg_update
+  and page_draw, and what they call) and all the text's data (gentext's: Font1, the faces, the scripts and
+  pages, MsgStaticBytes) are in the store's bank. Their state, the requests, the game's and a stage's starts
+  and two stubs keeping the names msg_update and page_draw are in main RAM (`src/textstate.6502`, in the &259
+  gap). flow writes the pages' figures (the continue's countdown, the bonus page's) with the store paged in.
+- The store is always there now (BanksNeeded 3, then 4): speak's test for it and the 64K CPC's MsgStart (the
+  words in place of the speech) are gone.
+- Rich: "why not already create a dummy section for the fourth bank and have it detect and load into that
+  too." CHASEL (`src/stages.6502`, a byte for now) is loaded into a fourth bank, `bankstages` (&03; the zero
+  page pool now starts at &04): !BOOT needs 64K. jsbeeb's B has RAM in banks 0-7, a Master 4-7.
+- sound.6502 moved into the &259 gap too (the meter's loop in panel.6502 had crossed &2100).
+- `tools/machine.py` loads CHASES and CHASEL as banks 2 and 3, and runs a call to a store routine with the
+  store paged in (its stubs' way), peeks and pokes reading the store's own copy when it isn't.
+- Room: code bank 5 -> 1,427 free in front of its data (10 before RoadT); main RAM's code 9,563 -> 8,867
+  bytes, so 388 -> 1,084 free at its end and the &259 gap 26 -> 1,659; the store 4,053 -> 7,810 used. The disc
+  27,392 -> 27,904 bytes.
+- The store's layout: the text's code from &8000, then its data padded to a low byte of &59, its low byte in
+  main RAM (23 bytes), so Font1 (&8566) crosses pages as at &266; then the decoder and the speech.
+- The stubs test MsgState and PageOn first, in main RAM, and page nothing in when they're 0: 13 cycles a loop
+  idle (was 12), 32 more than before when a message or page is on.
+- bench.py (all seven runs, against the build before; the pages run's `m.mem[page]` now `m.peek(page)`, as the
+  pages are in the store; `work/store/cmpbench.py` compares PageAt by its page's label): IDENTICAL, screens,
+  Rng and the text's state. msg_static, msg_clear, msg_blank and both faces: the same cycles. msg_update
+  +32 a call while a message runs, page_draw +28 to +37 a page's loop. The 1,500-loop drive: +14 a loop.
+- jsbeeb (B-DFS1.2, real IRQ, `work/store/textshots.mjs`, 400 loops of the demo rule): the four banks found
+  (4-7); the partner's "YAOOOOO" with his face, and the sighting's page; no crash. The start's phrase 5 and
+  the stage's phrase 3 written as the reference, write for write (phrase 3's capture caught 7 writes more
+  after it: the IRQ's next frame writing every channel, as speak leaves it to).

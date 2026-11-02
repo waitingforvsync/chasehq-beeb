@@ -1,0 +1,144 @@
+\\ textstate.6502 - the message window's and the pages' state, in main RAM (decisions D19): the requests,
+\\ the game's and a stage's starts, and the two entries into text.6502's loops in the store's bank.
+
+MsgIdle = 0                             ; the window's states (the CPC's &17C1): busy, bit 6 (BIT's V)
+MsgRunning = &40                        ; and closing, bit 7 (N), for msg_request's and msg_update's tests
+MsgOpening = &41
+MsgClosing = &80
+
+ZA_AUTO2 msgscript                      ; the script's next byte
+ZA_AUTO2 msgline                        ; the line's next glyph
+
+SECTION GameVars
+.MsgState
+    SKIP 1
+.MsgPrio                                ; the message's priority (kept after it ends)
+    SKIP 1
+.MsgTimer                               ; static's loops left (the CPC's &17C0)
+    SKIP 1
+.MsgPause                               ; a finished line's loops left (&17B7)
+    SKIP 1
+.MsgCol                                 ; the next glyph's column, 0-30
+    SKIP 1
+.MsgLeft                                ; the line's glyphs left
+    SKIP 1
+.PageAt                                 ; the page shown (the CPC's &136B)
+    SKIP 2
+.PageLoop                               ; its loop, 1 its first
+    SKIP 1
+.PageOn                                 ; not 0 while it's shown
+    SKIP 1
+ENDSECTION
+
+\\ The game's start: no message, no page.
+\\
+\\ Outputs:
+\\     MsgState, MsgPrio, PageOn
+\\     A: corrupted
+
+.text_new_game
+{
+    LDA #MsgIdle:STA MsgState
+    STA MsgPrio
+    STA PageOn
+    RTS
+}
+
+\\ A stage's start (the CPC's &15B8): the line cleared and the face blanked, a message carrying on; no page and
+\\ no popup.
+\\
+\\ Outputs:
+\\     the panel; MsgCol, PageOn, PopupTimer
+\\     A, X, Y: corrupted
+
+.text_stage
+{
+    LDA #0:STA PageOn
+    STA PopupTimer
+    JSR popup_clear
+    LDA bankstore:STA &FE30             ; ROMSEL: the store's
+    JSR msg_clear
+    JSR msg_blank
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    RTS
+}
+
+\\ Ask for a message (the CPC's &1DB4): refused while one's opening or printing with a priority as high;
+\\ otherwise it starts at once (static first), whatever was showing.
+\\
+\\ Inputs:
+\\     A: its priority
+\\     X, Y: its script's address, low and high
+\\
+\\ Outputs:
+\\     the window's state
+\\     A: corrupted
+
+.msg_request
+{
+    BIT MsgState:BVC take               ; (idle or closing: anything's taken)
+    CMP MsgPrio:BEQ refused:BCC refused
+.take
+    STA MsgPrio
+    STX msgscript:STY msgscript+1
+    LDA #0:STA MsgPause
+    LDA #MsgOpening:STA MsgState
+.refused
+    RTS
+}
+
+\\ A message's request: its script and priority the generator's (MsgRam, MsgRamPrio ...)
+
+MACRO MESSAGE script, prio
+    LDX #LO(script):LDY #HI(script)
+    LDA #prio:JSR msg_request
+ENDMACRO
+
+\\ Show a page (the CPC's &139F): from its first loop; a request starts it again.
+\\
+\\ Inputs:
+\\     X, Y: the page's address, low and high
+\\
+\\ Outputs:
+\\     PageAt, PageLoop, PageOn
+\\     A: corrupted
+
+.page_request
+{
+    STX PageAt:STY PageAt+1
+    LDA #0:STA PageLoop
+    LDA #1:STA PageOn
+    RTS
+}
+
+MACRO PAGE page
+    LDX #LO(page):LDY #HI(page)
+    JSR page_request
+ENDMACRO
+
+\\ The message window's loop and the page's (text.6502's msg_loop and page_loop), with the store's bank
+\\ paged in; nothing while there's no message, or no page.
+\\
+\\ Outputs:
+\\     as theirs
+\\     A, X, Y: corrupted
+
+.msg_update
+{
+    LDA MsgState:BEQ idle               ; (no message: nothing to page in for)
+    LDA bankstore:STA &FE30             ; ROMSEL: the store's
+    JSR msg_loop
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+.idle
+    RTS
+}
+
+.page_draw
+{
+    LDA PageOn:BEQ idle                 ; (no page)
+    LDA bankstore:STA &FE30             ; ROMSEL: the store's
+    JSR page_loop
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+.idle
+    RTS
+}

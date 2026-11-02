@@ -1,0 +1,89 @@
+\\ speak.6502 - the speech player, in main RAM's gap at &259 (it runs rarely): a phrase unpacked from the
+\\ store's bank into the hidden playfield, then played through the SN76489 with the game stopped.
+
+\\ Speak a phrase (the CPC's &0B75), the game stopped meanwhile as the CPC's is, the display running on: once
+\\ the last playfield drawn is shown, the phrase unpacked from the store's bank into the hidden one (D17),
+\\ then a sample each 207 cycles (the CPC's 414 T at 4 MHz), high nibble first, each an attenuation for tones
+\\ 1 and 2 at period 1, a steady level for it to shape (the CPC writes AY volumes 8 and 9: tools/genspeech.py
+\\ maps them). The IRQ's frame keeps off port A meanwhile (speaking); the chip's shadows are forgotten
+\\ after, so the sound's next frame writes everything.
+\\
+\\ Inputs:
+\\     A: the phrase, 1-5
+\\     bankstore; back, reqshow
+\\
+\\ Outputs:
+\\     the chip; SndAtt, SndLo, SndHi; the hidden playfield overwritten, SkyTop and SkyOther 0
+\\     A, X, Y: corrupted
+
+SampleDelay = 12                        ; the delay loop's count: tuned in jsbeeb to 207 cycles a sample
+
+.speak
+{
+    ZA_AUTO2 ptr, left                  ; local: the phrase's next byte; bytes left
+    ZA_AUTO1 pair                       ; local: the byte's two samples
+
+    LDY bankstore
+    TAX
+    JSR wait_back                       ; (the playfield last drawn shown: back the hidden one)
+    LDA SpeechPackLo-1,X:STA storezx.src
+    LDA SpeechPackHi-1,X:STA storezx.src+1
+    LDA #0:STA storezx.dst:STA ptr
+    STA SkyTop:STA SkyOther             ; (neither playfield's sky known any more)
+    LDA back:STA storezx.dst+1:STA ptr+1
+    LDA SpeechLenLo-1,X:STA left
+    LDA SpeechLenHi-1,X:STA left+1
+    STY &FE30                           ; ROMSEL: the store's bank
+    JSR storezx.unpack
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    LDA #&80:STA speaking
+    LDA #&0B:STA &FE40                  ; addressable latch: the keyboard's auto-scan on (PA7 free)
+    LDA #&FF:STA &FE43                  ; system VIA: DDRA, all out
+    LDX #0
+.setup
+    LDA SpeakSetup,X:JSR sn_write
+    INX:CPX #SpeakSetupEnd-SpeakSetup:BNE setup
+.byte
+    NOP                                 ; (the period: 414 cycles a byte in jsbeeb, 207 a sample, as tuned)
+    LDY #0:LDA (ptr),Y:STA pair
+    LSR A:LSR A:LSR A:LSR A
+    JSR sample
+    LDA pair:AND #15
+    JSR sample
+    INC ptr:BNE @+
+    INC ptr+1
+.@
+    LDA left:BNE @+
+    DEC left+1
+.@
+    DEC left
+    LDA left:ORA left+1:BNE byte
+    SAME_PAGE byte                      ; (the sample's period: a crossing here would add a cycle a byte)
+
+    LDA #&9F:JSR sn_write               ; (tones 1 and 2 off)
+    LDA #&BF:JSR sn_write
+    LDA #&7F:STA &FE43                  ; system VIA: DDRA, PA7 in again
+    LDA #&03:STA &FE40                  ; addressable latch: the auto-scan off again
+    LDA #&FF:LDX #3
+.forget
+    STA SndAtt,X:STA SndLo,X:STA SndHi,X
+    DEX:BPL forget
+    LDA #0:STA speaking
+    RTS
+
+    \\ a sample (A: its attenuation) to tones 1 and 2, then the wait
+
+.sample
+    TAY
+    ORA #&90:JSR sn_write               ; tone 1's attenuation
+    TYA:ORA #&B0:JSR sn_write           ; tone 2's
+    LDX #SampleDelay
+.wait
+    DEX:BNE wait
+    SAME_PAGE wait
+    RTS
+}
+
+.SpeakSetup                             ; tones 1 and 2 at period 1, tone 3 and the noise off
+    EQUB &81, &00, &A1, &00, &DF, &FF
+.SpeakSetupEnd

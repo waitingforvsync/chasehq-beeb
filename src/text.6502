@@ -1,101 +1,11 @@
 \\ text.6502 - the message window and the pages (docs/cpc-text.md): the partner's and Nancy's lines on the
 \\ panel a glyph a loop, with their faces and static between; the pages' boxes of text over the playfield.
-\\ In the code's bank; their data (build/gen/text.6502) is in main RAM, &259 on.
-
-MsgIdle = 0                             ; the window's states (the CPC's &17C1): busy, bit 6 (BIT's V)
-MsgRunning = &40                        ; and closing, bit 7 (N), for msg_request's and msg_update's tests
-MsgOpening = &41
-MsgClosing = &80
+\\ In the store's bank with their data (build/gen/text.6502), entered through textstate.6502 (D19).
 
 LineTop = MsgLineTop + MsgLineCell * 8      ; column 0's glyph lines 0-3: row 6's lines 4-7
 LineBottom = MsgLineBottom + MsgLineCell * 8    ; and 4-7: row 7's lines 0-3
 ASSERT LO(LineTop) < 256 - 16 AND LO(LineBottom) < 256 - 16, "a glyph's offsets fit in Y"
 ASSERT MsgLineCell == 1 AND MsgColumns == 31, "msg_clear's cells: 1-31, and 31 on from each"
-
-ZA_AUTO2 msgscript                      ; the script's next byte
-ZA_AUTO2 msgline                        ; the line's next glyph
-
-SECTION GameVars
-.MsgState
-    SKIP 1
-.MsgPrio                                ; the message's priority (kept after it ends)
-    SKIP 1
-.MsgTimer                               ; static's loops left (the CPC's &17C0)
-    SKIP 1
-.MsgPause                               ; a finished line's loops left (&17B7)
-    SKIP 1
-.MsgCol                                 ; the next glyph's column, 0-30
-    SKIP 1
-.MsgLeft                                ; the line's glyphs left
-    SKIP 1
-.PageAt                                 ; the page shown (the CPC's &136B)
-    SKIP 2
-.PageLoop                               ; its loop, 1 its first
-    SKIP 1
-.PageOn                                 ; not 0 while it's shown
-    SKIP 1
-ENDSECTION
-
-\\ The game's start: no message, no page.
-\\
-\\ Outputs:
-\\     MsgState, MsgPrio, PageOn
-\\     A: corrupted
-
-.text_new_game
-{
-    LDA #MsgIdle:STA MsgState
-    STA MsgPrio
-    STA PageOn
-    RTS
-}
-
-\\ A stage's start (the CPC's &15B8): the line cleared and the face blanked, a message carrying on; no page and
-\\ no popup.
-\\
-\\ Outputs:
-\\     the panel; MsgCol, PageOn, PopupTimer
-\\     A, X, Y: corrupted
-
-.text_stage
-{
-    LDA #0:STA PageOn
-    STA PopupTimer
-    JSR popup_clear
-    JSR msg_clear
-    JMP msg_blank
-}
-
-\\ Ask for a message (the CPC's &1DB4): refused while one's opening or printing with a priority as high;
-\\ otherwise it starts at once (static first), whatever was showing.
-\\
-\\ Inputs:
-\\     A: its priority
-\\     X, Y: its script's address, low and high
-\\
-\\ Outputs:
-\\     the window's state
-\\     A: corrupted
-
-.msg_request
-{
-    BIT MsgState:BVC take               ; (idle or closing: anything's taken)
-    CMP MsgPrio:BEQ refused:BCC refused
-.take
-    STA MsgPrio
-    STX msgscript:STY msgscript+1
-    LDA #0:STA MsgPause
-    LDA #MsgOpening:STA MsgState
-.refused
-    RTS
-}
-
-\\ A message's request: its script and priority the generator's (MsgRam, MsgRamPrio ...)
-
-MACRO MESSAGE script, prio
-    LDX #LO(script):LDY #HI(script)
-    LDA #prio:JSR msg_request
-ENDMACRO
 
 \\ The message window's loop (the CPC's &1DD4), after its requests: opening, the line cleared and static; 4
 \\ loops on, the script read (its choices, its speaker's face) and the first line begun; a glyph a loop, a
@@ -109,7 +19,7 @@ ENDMACRO
 \\     the panel; the window's state; the generator (the choices, the static)
 \\     A, X, Y: corrupted
 
-.msg_update
+.msg_loop
 {
     LDA MsgState:BEQ done
     BMI closing
@@ -342,28 +252,6 @@ ENDMACRO
     RTS
 }
 
-\\ Show a page (the CPC's &139F): from its first loop; a request starts it again.
-\\
-\\ Inputs:
-\\     X, Y: the page's address, low and high
-\\
-\\ Outputs:
-\\     PageAt, PageLoop, PageOn
-\\     A: corrupted
-
-.page_request
-{
-    STX PageAt:STY PageAt+1
-    LDA #0:STA PageLoop
-    LDA #1:STA PageOn
-    RTS
-}
-
-MACRO PAGE page
-    LDX #LO(page):LDY #HI(page)
-    JSR page_request
-ENDMACRO
-
 \\ The page's loop (the CPC's &12CF, &136A): the entries that have appeared drawn into the back playfield
 \\ (redrawn whole by the road each loop); after its last loop, gone. An entry (&13B2) is an opaque white box:
 \\ a left column, a right one (its left pixel white), 2 cells a glyph between, a pixel cut from each corner.
@@ -378,7 +266,7 @@ ENDMACRO
 \\     the playfield; PageLoop, PageOn; SkyTop 0 while it's on (its boxes are near the top)
 \\     A, X, Y: corrupted
 
-.page_draw
+.page_loop
 {
     ZA_AUTO2 at                         ; local: the page's entry, then its next glyph
     ZA_AUTO2 mid, dn, up7               ; local: the rows: the text's first, below it, above it at line 7

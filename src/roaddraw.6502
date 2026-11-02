@@ -211,6 +211,7 @@ LineEntry = 69                          ; the line (after its rarer edges' paths
     ZA_AUTO1 tstep, tacc                ; local: |its X difference|, Bresenham's sum
     ZA_AUTO2 tlo, thi                   ; local: a table's low and high bytes
     ZA_AUTO1 skyclean, skyn             ; local: lines above that sky already; sky lines left to draw
+    ZA_AUTO1 cover                      ; local: lines above this the tunnel's mouth will cover (0 none)
 
     LDA back:CMP SkyBuf:BEQ @+          ; this playfield's sky mark
     STA SkyBuf
@@ -219,7 +220,7 @@ LineEntry = 69                          ; the line (after its rarer edges' paths
     LDA SkyTop:STA skyclean
     LDA #0:STA SkyTop                   ; (no sky yet)
     LDA #127:STA line
-    LDA #0:STA entry:STA j:STA level:STA levelr:STA set
+    LDA #0:STA entry:STA j:STA level:STA levelr:STA set:STA cover
     STA MouthKind:STA TunnelBeyond      ; (no tunnel seen yet)
     LDA #3:STA count
     LDA #4:STA right
@@ -608,6 +609,7 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     ZA_AUTO1 r                          ; local: the road's lines, less the fork's
 
     LDA line:BMI full
+    CMP cover:BCC full                  ; (the mouth covers what's left)
     LDX TunnelBeyond:BNE dark           ; (no backdrop: the CPC also tests for an entrance seen, which sets this)
     LDA #127:SEC:SBC line
     SEC:SBC forklines:STA r             ; (r: the road's lines, for the moment, less the fork's)
@@ -651,13 +653,16 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     \\ with a tunnel beyond, the sky all black (the CPC's &4D44), and none of it sky for the next time
 
 .dark
-    CLC:ADC #1                          ; (lines 0 to line; SkyTop stays 0)
+    SEC:SBC cover:ADC #0                ; (lines cover to line; SkyTop stays 0)
     LDX #SkyTunnel
     JMP skyset                          ; (a JMP, not BEQ: page_draw's size-2 glyph loop then stays off &A200)
 
     \\ the sky: lines 0 to line, those from skyclean up already sky in this playfield
 
 .sky
+    LDA cover:CMP skyclean:BCC @+
+    STA skyclean                        ; (no sky drawn under the mouth's cover)
+.@
     LDA line:BMI done
     CLC:ADC #1:STA SkyTop               ; (lines 0 to line)
     SEC:SBC skyclean:BEQ done:BCC done  ; the lines to draw
@@ -1256,6 +1261,15 @@ evencopy = oddcopy + (copiesend - oddcopy) DIV 2
     BEQ beyond                          ; (no mouth: A 0)
     STY MouthAt
     STX MouthKind
+    TYA:BEQ covers                      ; (row 0's isn't drawn; A 0)
+    CPY #22:BCS uncovered               ; (nor rows 22 and 23, a hidden entrance's)
+    CLC:ADC RoadY,Y:BMI uncovered       ; (row + y negative: none; else, y being under 3 scale, no sum overflows)
+    SEC:SBC RowScale,Y
+    CLC:ADC #17:BPL covers              ; the row's line less h, + 1: the mouth covers every line above it
+.uncovered
+    LDA #0                              ; (the first part reaching the top: no cover)
+.covers
+    STA cover
     TXA:AND #&10                        ; (an exit's: the outside beyond)
 .beyond
     EOR #&10:LSR A:LSR A:LSR A:STA set  ; (2 the tunnel's colours, 0 the normal)

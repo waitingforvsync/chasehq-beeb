@@ -110,8 +110,8 @@ ENDSECTION
 
 .lines
     LDA line:AND #7:TAX                 ; X: the line in its row
+    AND #1:ORA part:TAY                 ; Y: its colour (by its parity)
 .lineloop
-    TXA:AND #1:ORA part:TAY
     LDA MouthFills,Y
     JSR Runner
     ZA_CANCALL Runner
@@ -121,6 +121,7 @@ ENDSECTION
     ZA_CANCALL Runner
     DEC line:BMI top
     SAME_PAGE top
+    TYA:EOR #1:TAY                      ; (the next line's colour)
     DEX:BPL rowed
     SAME_PAGE rowed
     LDX #7                              ; (a new row)

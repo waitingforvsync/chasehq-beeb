@@ -249,7 +249,9 @@ ENDSECTION
     CMP #10:BEQ @+
     LDX #GlyphSpace:TAY
 .@
+    LDA bankstore:STA &FE30             ; ROMSEL: the store's (the page's figures there)
     STX PageContinueTime:STY PageContinueTime+1
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
     PAGE PageContinue
     CLC
     RTS
@@ -379,6 +381,7 @@ ENDSECTION
 
 .arrest_bonus
 {
+    LDA bankstore:STA &FE30             ; ROMSEL: the store's (the page's figures there)
     LDA Seconds:LSR A:LSR A:LSR A:LSR A
     BNE @+
     LDA #GlyphSpace
@@ -415,6 +418,7 @@ ENDSECTION
     LDA #GlyphSpace:STA PageBonusScore,Y
     INY:CPY #7:BNE lead
 .done
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
     RTS
 }
 

@@ -25,7 +25,7 @@ SRC = src/boot.6502 src/chasehq.6502
 GENOUT = $(GEN)/gen.6502 $(GEN)/panel.bin $(GEN)/siren.6502
 ROADOUT = $(GEN)/road.6502
 SPROUT = $(GEN)/sprites.6502
-SPEECHOUT = $(GEN)/speech.6502 $(GEN)/speech.bin
+SPEECHOUT = $(GEN)/speech.6502 $(GEN)/speechstore.6502 $(foreach n,1 2 3 4 5,$(GEN)/speech$(n).bin)
 TEXTOUT = $(GEN)/text.6502 $(GEN)/dissolve.6502
 DEPS = $(wildcard src/*.6502) $(GENOUT) $(ROADOUT) $(SPROUT) $(SPEECHOUT) $(TEXTOUT)
 

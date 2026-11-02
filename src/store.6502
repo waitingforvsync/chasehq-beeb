@@ -1,0 +1,20 @@
+\\ store.6502 - the store's bank (the third): the message window and the pages with their data (decisions
+\\ D19), what the game keeps packed (D17), and the decoder that unpacks it, all run from here with this bank
+\\ paged in. For now the packed are the speech's phrases, which speak unpacks into the hidden playfield.
+
+    INCLUDE "text.6502"                 ; the message window and the pages
+
+    \\ their data at the low bytes it had in main RAM (&259 on), so Font1's planes cross pages as they did
+
+    PADTO P% + ((LO(TextDataLow) - P%) AND &FF)
+    INCLUDE "../build/gen/text.6502"    ; their font, faces, scripts and pages (tools/gentext.py)
+
+\\ The decoder (dzx02.6502): storezx.unpack unpacks the ZX02 stream at storezx.src, in this bank, to
+\\ storezx.dst
+
+.storezx
+{
+    INCLUDE "dzx02.6502"
+}
+
+    INCLUDE "../build/gen/speechstore.6502" ; the phrases (tools/genspeech.py)

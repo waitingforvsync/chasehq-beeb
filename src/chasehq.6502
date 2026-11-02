@@ -1,6 +1,6 @@
-\\ chasehq.6502 - the game's files: CHASEC and CHASED, the sideways RAM banks' images (code and data), each
-\\ packed by ZX02 (!BOOT loads each and unpacks it into a bank it found), and CHASE2, main RAM's code and
-\\ the panel, each packed by ZX02, then the loader that unpacks them into place.
+\\ chasehq.6502 - the game's files: CHASEC, CHASED, CHASES and CHASEL, the sideways RAM banks' images (code,
+\\ data, the store and the stages), each packed by ZX02 (!BOOT loads each and unpacks it into a bank it found),
+\\ and CHASE2, main RAM's code and the panel, each packed by ZX02, then the loader that unpacks them into place.
 \\
 \\ No code in one bank reads the other's data or calls into it: each routine is in the bank with its
 \\ data, or in main RAM, paging in the bank whose data it reads (D9).
@@ -14,7 +14,6 @@ SECTION CodeFile, filename = "CHASEC", load = &FFFF0000+BankLoad
     SECTION SwramCode, org = SwramOrg, guard = CodeVarsOrg, transform = "zx02"
         INCLUDE "road.6502"             ; the course and the road's geometry
         INCLUDE "roaddraw.6502"         ; the playfield drawn from it
-        INCLUDE "text.6502"             ; the message window and the pages
         INCLUDE "turbos.6502"           ; the turbo icons, compiled
         INCLUDE "popup.6502"            ; the bonus popup
         INCLUDE "tunnel.6502"           ; the tunnel's state and mouth
@@ -25,9 +24,15 @@ SECTION CodeFile, filename = "CHASEC", load = &FFFF0000+BankLoad
     ENDSECTION
 ENDSECTION
 
-SECTION SpeechFile, filename = "CHASES", load = &FFFF0000+BankLoad
-    SECTION SwramSpeech, org = SwramOrg, guard = SwramEnd, transform = "zx02"
-        INCBIN "../build/gen/speech.bin"    ; the phrases (tools/genspeech.py), for a third bank if any
+SECTION StoreFile, filename = "CHASES", load = &FFFF0000+BankLoad
+    SECTION SwramStore, org = SwramOrg, guard = SwramEnd, transform = "zx02"
+        INCLUDE "store.6502"            ; the text, and what's kept packed: the speech
+    ENDSECTION
+ENDSECTION
+
+SECTION StagesFile, filename = "CHASEL", load = &FFFF0000+BankLoad
+    SECTION SwramStages, org = SwramOrg, guard = SwramEnd, transform = "zx02"
+        INCLUDE "stages.6502"           ; the stages, packed
     ENDSECTION
 ENDSECTION
 
@@ -51,13 +56,14 @@ SECTION Chase2, org = LoadFloor, load = &FFFF0000+LoadFloor, exec = &FFFF0000+en
         ASSERT P% == MainVarsOrg, "MainVars is the gap after IRQ1V"
         SKIPTO &258                     ; (MainVars, memory.6502)
         EQUB 2                          ; clear memory on BREAK
-        INCLUDE "../build/gen/text.6502"    ; the text's font, faces, scripts and pages (tools/gentext.py)
+        INCLUDE "textstate.6502"        ; the messages' and pages' state and requests
         INCLUDE "plotting.6502"         ; the data's bank paged in for the sprites
+        INCLUDE "speak.6502"            ; the speech player
+        INCLUDE "../build/gen/speech.6502"  ; the phrases' places (tools/genspeech.py)
+        INCLUDE "sound.6502"            ; the SN76489, from the IRQ
 
         PADTO NmiOrg
         RTI                             ; stray NMIs
-        INCLUDE "sound.6502"            ; the SN76489, from the IRQ, and the speech
-        INCLUDE "../build/gen/speech.6502"  ; the phrases' places (tools/genspeech.py)
 
         \\ the game's logic, in main RAM for now (the code's bank is full): it reads main RAM's variables and
         \\ the code's bank's tables, which is always paged in outside the sprite stubs

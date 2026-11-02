@@ -65,7 +65,7 @@ MESSAGES = [
     ('MsgForkRight', 0x1AF2, 20, '&4087: past the fork on the criminal\'s branch'),
     ('MsgForkWrong', 0x1A4D, 20, '&4087: past the fork on the other branch'),
     ('MsgTime15', 0x1A89, 21, '&202B: the clock reaches 15'),
-    ('MsgStart', 0x1AF8, 255, '&035F: the stage starts, on a 64K CPC (no speech)'),
+    # (MsgStart, &1AF8: the 64K CPC's words in place of the speech, not needed: the speech is always there, D19)
     ('MsgGameOver', 0x1AC9, 255, '&046D: the game over sequence starts'),
 ]
 AIRBORNE = [                                        # only with a stage face, (&5BCA) <> 0: stages 2 and 4
