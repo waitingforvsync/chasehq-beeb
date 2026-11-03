@@ -329,8 +329,9 @@ every script, page entry, appearance loop, offset and glyph matches the CPC's.
   the patched glyphs: `PageContinueTime` (2), `PageBonusClear` (2), `PageBonusTime` (2), `PageBonusScore`
   (8). The page data is patched in place, as the CPC's is (sideways RAM is RAM).
 - **The dissolve**: the 19 masks reordered to a cell pair's 16 bytes in screen order (byte i for cell i DIV 8,
-  line i AND 7), so a record is copied straight into 16 patched immediates; `DissolveFirst` and
-  `DissolveCount` for out patterns 1-3 then in 1-3.
+  line i AND 7) and packed 4 codes a byte (76 bytes, `dissolve.6502`); each step decodes its mask into 16
+  patched immediates. `DissolveFirst` and `DissolveCount` (`dissolvepat.6502`): 8 entries each by random AND 3
+  (0 listed twice), out then in.
 - **Colours**: D7 pairs over 2x2 blocks of the glyph's or face's own pixels, as gensprites.py does. White is
   exact (`&3F`); the font's dark blue is black/blue, mauve blue/magenta, grey green/magenta; the faces are
   black, white and green/magenta. Glyphs and faces sit at even pixels and lines, so their parity is the
@@ -407,7 +408,9 @@ a second pass.
 - The faces are copied once per speaker, so a main RAM stub paging the data bank in (as `plot_sprite`
   does) costs nothing that matters: 730 bytes of its 2.5K.
 - If the code bank needs its room for the road, the dissolve moves to the data bank (about 570 bytes): it
-  runs 7-8 loops at a time and costs far more than a stub.
+  runs 7-8 loops at a time and costs far more than a stub. (As built, 2026-11-03: the step and its masks in
+  the data bank, 288 bytes, `src/dissolvestep.6502`; the request, the patterns and the stub that pages the
+  data bank in main RAM, 70 bytes, `src/dissolve.6502`.)
 - Main RAM keeps only the 17 bytes of GameVars and the face stub (about 20 bytes).
 
 ### Savings, if they're needed

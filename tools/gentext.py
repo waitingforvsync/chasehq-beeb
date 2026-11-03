@@ -654,16 +654,17 @@ def main(out):
     recs = [cpc.mem[MASKS + 16 * k:MASKS + 16 * k + 16] for k in range(MASK_COUNT)]
     w('\\\\ the dissolve (&1337): 19 masks for a pair of cells (even, odd), the same for every pair in the playfield,')
     w('\\\\ in the screen\'s order: byte i for cell i DIV 8 of the pair, line i AND 7 (the CPC has them by line, even')
-    w('\\\\ then odd byte). Every byte is &00, &55, &AA or &FF, a code 0-3 times &55: packed 4 codes a byte, byte i')
-    w('\\\\ in bits 2(i AND 3) up of the mask\'s byte i DIV 4. A pattern ANDs one into the back playfield each loop')
-    w('\\\\ for its count of loops, stepping, and draws its last one twice (no step on its last loop). Out (the')
-    w('\\\\ CPC\'s A >= 0) steps +1, in steps -1. Pattern random AND 3, 0 taken as 1')
+    w('\\\\ then odd byte). Every byte is &00, &55, &AA or &FF, a code 0-3 times &55: packed 4 codes a byte, the last')
+    w('\\\\ first (dissolve_step works down), byte 15 - i in bits 2(i AND 3) up of the mask\'s byte i DIV 4. A pattern')
+    w('\\\\ ANDs one into the back playfield each loop for its count of loops, stepping, and draws its last one twice')
+    w('\\\\ (no step on its last loop). Out (the CPC\'s A >= 0) steps +1, in steps -1. Pattern random AND 3, 0 taken')
+    w('\\\\ as 1')
     w()
     w('.DissolveMasks')
     for k, r in enumerate(recs):
         scr = [r[2 * (i & 7) + (i >> 3)] for i in range(16)]
         assert all(b == (b & 3) * 0x55 for b in scr), 'a mask byte not a code times &55'
-        packed = [sum((scr[4 * j + t] & 3) << 2 * t for t in range(4)) for j in range(4)]
+        packed = [sum((scr[15 - 4 * j - t] & 3) << 2 * t for t in range(4)) for j in range(4)]
         w.equb(hexes(packed), f'{k}: the CPC\'s &{MASKS + 16 * k:04X}')
     pats = []
     for sign, table in ((1, 0x5305), (-1, 0x530E)):
@@ -672,14 +673,20 @@ def main(out):
             first = (ptr - MASKS) // 16 + sign
             pats.append((first, count, [first + sign * min(i, count - 2) for i in range(count)]))
             assert all(0 <= k < MASK_COUNT for k in pats[-1][2])
+    with open(os.path.join(out, 'dissolve.6502'), 'w') as f:  # (its own file: it goes where there's room)
+        f.write('\n'.join(w.lines) + '\n')
+    n1 = w.bytes
+    w.lines = ['\\\\ dissolvepat.6502 - made by tools/gentext.py from the CPC disc: do not edit.', '',
+               '\\\\ the dissolve\'s patterns (&1337): each one\'s first mask (in DissolveMasks) and its loops', '']
     order = [0, 0, 1, 2, 3, 3, 4, 5]                    # (by random AND 3, + 4 in: 0 taken as 1)
     w('.DissolveFirst', 'the first mask: out by random AND 3 (0 as 1), then in')
     w.equb([str(pats[i][0]) for i in order])
     w('.DissolveCount', 'its loops')
     w.equb([str(pats[i][1]) for i in order])
-    sizes['dissolve'] = w.bytes - n0
+    sizes['dissolve'] = n1 - n0
+    sizes['dissolve patterns'] = w.bytes - n1
 
-    with open(os.path.join(out, 'dissolve.6502'), 'w') as f:  # (its own file: it goes where there's room)
+    with open(os.path.join(out, 'dissolvepat.6502'), 'w') as f:  # (with the request, in main RAM)
         f.write('\n'.join(w.lines) + '\n')
 
     # the stage intro's colours and lights (&04E5, docs/cpc-logic.md)

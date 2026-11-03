@@ -55,6 +55,7 @@ SECTION DataFile, filename = "CHASED", load = &FFFF0000+BankLoad
     SECTION SwramData, org = SwramOrg, guard = DataVarsOrg, transform = "zx02"
         INCLUDE "sprites.6502"          ; the plotter
         INCLUDE "../build/gen/sprites.6502" ; and the sprites (tools/gensprites.py)
+        INCLUDE "dissolvestep.6502"     ; the dissolve's step and masks
         INCLUDE "../build/gen/spriteslot.6502"  ; the stage's slot, at the bank's end
     ENDSECTION
 ENDSECTION
@@ -69,8 +70,8 @@ SECTION Chase2, org = LoadFloor, load = &FFFF0000+LoadFloor, exec = &FFFF0000+en
         PADTO &204
         EQUW irq                        ; IRQ1V
 
-        ASSERT P% == MainVarsOrg, "MainVars is the gap after IRQ1V"
-        SKIPTO &258                     ; (MainVars, memory.6502)
+        INCLUDE "gameover.6502"         ; the game's end, in the gap after IRQ1V (D18)
+        PADTO &258
         EQUB 2                          ; clear memory on BREAK
         INCLUDE "textstate.6502"        ; the messages' and pages' state and requests
         INCLUDE "plotting.6502"         ; the data's bank paged in for the sprites
@@ -86,6 +87,8 @@ SECTION Chase2, org = LoadFloor, load = &FFFF0000+LoadFloor, exec = &FFFF0000+en
 
         \\ the decoder for what the store's and the stages' banks keep packed (unzx.unpack: the ZX02 stream at
         \\ unzx.src, in the bank paged in, to unzx.dst in main RAM): at the gap's top, its loops in one page
+
+        INCLUDE "dissolve.6502"         ; the dissolve's request (its step in the data's bank)
 
         PADTO NmiOrg - (unzxend - unzx)
 .unzx

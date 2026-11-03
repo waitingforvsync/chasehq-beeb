@@ -3,8 +3,8 @@
 
 \\   &0000  zero page: the banks' numbers at &00-&03 (!BOOT writes them), then the pool, bar &FC
 \\   &0100  the stack's sentinel, then the stack: 32 bytes
-\\   &0121  main RAM's code: the IRQ, and what must see two banks. IRQ1V at &204 (MainVars after it),
-\\          &258 = 2 (clear on BREAK), an RTI at &D00 for stray NMIs (claimed from the filing system)
+\\   &0121  main RAM's code: the IRQ, and what must see two banks. IRQ1V at &204 (the game's end after it:
+\\          D18), &258 = 2 (clear on BREAK), an RTI at &D00 for stray NMIs (claimed from the filing system)
 \\   &2600  the game's variables (GameVars), the stage's sprite tables among them; at a stage's start the intro
 \\          runs from &2600-&29FF, over RoadWindow and the edge tables (intro.6502, D26)
 \\   &3000  the panel: 8 rows of 512 bytes, single-buffered
@@ -27,7 +27,6 @@ BanksNeeded = 4
 StackSentinel = &5A                     ; at &100, under the stack: changed only if it overflows
 StackTop = &0120                                    ; 32 bytes of stack, &101 up
 MainCodeOrg = &0121
-MainVarsOrg = &0206                     ; after IRQ1V, to &258: variables (MainVars)
 NmiOrg = &0D00                          ; an RTI, for stray NMIs
 GameVarsOrg = &2600
 GameVarsEnd = PanelAddr
@@ -49,9 +48,6 @@ ASSERT PanelAddr + PanelRows * RowBytes == PlayAddrA, "the panel ends where play
 ASSERT PlayAddrA + PlayBytes == PlayAddrB AND PlayAddrB + PlayBytes == &8000, "the playfields fill to &8000"
 ASSERT (PlayAddrA EOR PlayAddrB) == &2000, "a flip is EOR #&20 on a playfield address's high byte"
 ASSERT LO(PanelAddr DIV 8) == 0 AND LO(PlayAddrA DIV 8) == 0 AND LO(PlayAddrB DIV 8) == 0, "R13 is 0 for all three"
-
-SECTION MainVars, org = MainVarsOrg, guard = &258, virtual = TRUE
-ENDSECTION
 
 SECTION GameVars, org = GameVarsOrg, guard = GameVarsEnd, virtual = TRUE
 ENDSECTION

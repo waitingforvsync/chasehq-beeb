@@ -1,12 +1,15 @@
 \\ flow.6502 - the clock, the score and the stage's course (docs/cpc-logic.md, Time, score and flow), so far:
-\\ driving, the time running out, the game over, the arrest. In the code's bank.
+\\ driving, the time running out, the game over, the arrest; their dissolves. In main RAM.
 
 FlowDriving = 0
 FlowTimeUp = 1                                      ; the car coasts to a stop
 FlowStopped = 2                                     ; stopped: TIME UP's page runs out
 FlowArrested = 3                                    ; 20 rams: the arrest (ArrestState), then the stage again
 FlowContinue = 4                                    ; a continue offered, counting down
-FlowOver = 5                                        ; the game's over: Nancy's verdict, then a new game
+FlowEnding = 5                                      ; the game's over: a dissolve out once no page shows
+FlowFading = 6                                      ; (the CPC's &179E 1 and 2), then the sequence (&0445):
+FlowOver = 7                                        ; Nancy's verdict and the GAME OVER page till it's closed,
+FlowFinal = 8                                       ; a dissolve out, then a new game
 LoopsASecond = 15                                   ; the CPC's
 ArrestRams = 20
 ContinueCount = 21                                  ; the offer's count, 4 loops each (the CPC's L)
@@ -126,6 +129,7 @@ ENDSECTION
     \\ the clock: a second every 15 loops; at 0 the time's up, and stopped with none left the game's over
 
 .clock
+    LDA DissolveLeft:BNE scoring            ; (a dissolve: no clock, the CPC's &1FF0)
     LDA FlowState:BNE timeup
     DEC Tick:BNE scoring
     LDA #LoopsASecond:STA Tick
@@ -201,20 +205,20 @@ ENDSECTION
 }
 
 \\ Stopped with the time up (the CPC's clock state 2): once TIME UP's page has run out, a continue offered if
-\\ one's left, else the game's over.
+\\ one's left, else the game's over as the CPC's quit has it (&1590): the window closed there and then.
 \\
 \\ Inputs:
 \\     PageOn, ContinuesLeft
 \\
 \\ Outputs:
 \\     C: clear
-\\     the flow's state
+\\     the flow's state; the window's
 \\     A, X, Y: corrupted
 
 .flow_stopped
 {
     LDA PageOn:BNE wait
-    LDA ContinuesLeft:BEQ game_over
+    LDA ContinuesLeft:BEQ quit
     DEC ContinuesLeft
     LDA #FlowContinue:STA FlowState
     LDA #ContinueCount:STA FlowWait
@@ -222,11 +226,15 @@ ENDSECTION
 .wait
     CLC
     RTS
+.quit
+    LDA #FlowEnding:STA FlowState
+    JMP msg_close                       ; (C clear)
 }
 
-\\ The continue's offer (the CPC's clock state 3): its page every loop, its TIME the count halved ("10", or a
-\\ space and a digit); every 4 loops the count down with a beep (effect 8 on an even count, 9 on an odd one,
-\\ priority 1); at 0, the game's over. The gear takes it (game.6502, flow_continue).
+\\ The continue's offer (the CPC's clock state 3, &209A): its page every loop, its TIME the count halved
+\\ ("10", or a space and a digit); every 4 loops the count down with a beep (effect 8 on an even count, 9 on an
+\\ odd one, priority 1); at 0 the game's over, that loop's beep and page drawn too. The gear takes it
+\\ (game.6502, flow_continue).
 \\
 \\ Inputs:
 \\     FlowWait, Tick
@@ -240,9 +248,11 @@ ENDSECTION
 {
     DEC Tick:BNE shown
     LDA #4:STA Tick
-    DEC FlowWait:BEQ game_over
+    DEC FlowWait
     LDA FlowWait:AND #1:ORA #8
     LDY #1:JSR sound_effect
+    LDA FlowWait:BNE shown
+    LDA #FlowEnding:STA FlowState       ; (the CPC's &179E = 1)
 .shown
     LDA FlowWait:LSR A
     LDX #1:LDY #0                       ; ("10")
@@ -279,34 +289,35 @@ ENDSECTION
     LDA #5:JMP speak
 }
 
-\\ The game's over (the CPC's &179E, &0445): Nancy's verdict, and the GAME OVER page every loop till it's
-\\ closed; then a new game. (The CPC's own ending, a dissolve and the car following the criminal along a set
-\\ road, comes with the title.)
+\\ After the show (the CPC's after its flip, &03F4): nothing while a page or a dissolve runs; else the stage's
+\\ phrase on its second loop (&179F), and nothing more that loop; else the game's end (over_shown).
+\\
+\\ Inputs:
+\\     PageOn, DissolveLeft, StageLoops, StagePhrase, FlowState
 \\
 \\ Outputs:
-\\     C: set when the game's to start again
-\\     the flow's state, the page, the message
+\\     StageLoops, StagePhrase; as over_shown's
 \\     A, X, Y: corrupted
 
-.game_over
+.flow_shown
 {
-    LDA #FlowOver:STA FlowState
-    MESSAGE MsgGameOver, MsgGameOverPrio
-    CLC
+    LDA PageOn:ORA DissolveLeft:BNE done
+    LDX StageLoops:INX:BEQ ending       ; (255: counted)
+    STX StageLoops
+    CPX #2:BNE ending                   ; (the second loop: the phrase)
+    LDA StagePhrase:JSR speak
+    DEC StagePhrase:BNE done            ; (the next: 3, 2, 1, 3 ..., as the CPC's &0342)
+    LDA #3:STA StagePhrase
+.done
     RTS
-}
-
-.flow_over
-{
-    PAGE PageGameOver
-    LDA #MsgIdle:CMP MsgState           ; (C set: closed)
-    RTS
+.ending
+    JMP over_shown                      ; (gameover.6502)
 }
 
 \\ The arrest after the pull-over (the CPC's &0F8E): 2, the car pulls in behind (4 lines higher a loop to 16, 12
 \\ across to &126, a 32nd of a segment on unless that carries); 3, 4 loops' wait, then the arrest's page; 4,
 \\ when it's gone, the bonuses (the stage x 100,000, and 5,000 a second left) and their page; 5, when that's
-\\ gone, the stage again.
+\\ gone, a dissolve out (&0FB9); 6, when that's done, the next stage.
 \\
 \\ Inputs:
 \\     ArrestState
@@ -323,7 +334,35 @@ ENDSECTION
     CMP #3:BEQ wait
     CMP #4:BEQ arrested
     CMP #5:BEQ bonused
-    CLC                                 ; (the pull-over: arrest_keys)
+    CMP #6:BEQ faded
+.still
+    CLC                                 ; (the pull-over: arrest_keys; or waiting)
+    RTS
+.wait
+    DEC ArrestCount:BNE still
+    LDA #4:STA ArrestState
+    PAGE PageArrest
+    CLC
+    RTS
+.arrested
+    LDA PageOn:BNE still
+    JSR arrest_bonus
+    LDA #5:STA ArrestState
+    PAGE PageBonus
+    CLC
+    RTS
+.bonused
+    LDA PageOn:BNE still
+    INC ArrestState                     ; (6)
+    LDA #0:JMP dissolve_start           ; (out; C clear)
+.faded
+    LDA DissolveLeft:BNE still
+    LDX Stage:INX                       ; the next stage (after the fifth the first again, for now: no ending)
+    CPX #6:BCC @+
+    LDX #1
+.@
+    STX Stage
+    SEC
     RTS
 .pullin
     LDA CarLift:CMP #16:BCS pulled
@@ -347,29 +386,6 @@ ENDSECTION
     LDA #3:STA ArrestState
     LDA #4:STA ArrestCount
     CLC
-    RTS
-.wait
-    DEC ArrestCount:BNE still
-    LDA #4:STA ArrestState
-    PAGE PageArrest
-.still
-    CLC
-    RTS
-.arrested
-    LDA PageOn:BNE still
-    JSR arrest_bonus
-    LDA #5:STA ArrestState
-    PAGE PageBonus
-    CLC
-    RTS
-.bonused
-    LDA PageOn:BNE still
-    LDX Stage:INX                       ; the next stage (after the fifth the first again, for now: no ending)
-    CPX #6:BCC @+
-    LDX #1
-.@
-    STX Stage
-    SEC
     RTS
 }
 

@@ -87,6 +87,23 @@ ENDSECTION
     RTS
 }
 
+\\ Close the window there and then (the CPC's &1E20): the line cleared and static in the face box for 4 loops.
+\\
+\\ Outputs:
+\\     the window's state; the generator (the static)
+\\     C: clear
+\\     A, X, Y: corrupted
+
+.msg_close
+{
+    LDA #MsgClosing:STA MsgState
+    LDA bankstore:STA &FE30             ; ROMSEL: the store's
+    JSR msg_static
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    CLC                                 ; (for flow_stopped's: its state's done)
+    RTS
+}
+
 \\ A message's request: its script and priority the generator's (MsgRam, MsgRamPrio ...)
 
 MACRO MESSAGE script, prio

@@ -17,7 +17,7 @@ TopSpeed = 360                          ; the CPC's in high gear (docs/cpc-logic
 SECTION GameVars
 .StageLoops                             ; the stage's loops, to 255: its phrase on the second
     SKIP 1
-.StagePhrase                            ; the stage's next phrase: 3 first, then 1, 2, 3 ... (the CPC's)
+.StagePhrase                            ; the stage's next phrase: 3 first, then 2, 1, 3 ... (the CPC's &164F)
     SKIP 1
 ENDSECTION
 
@@ -47,9 +47,10 @@ ENDSECTION
 .loop
     JSR flow_update                     ; (last loop's speed, rams and overtakes)
     BCC run
-    LDA FlowState:CMP #FlowOver:BNE @+
+    LDA FlowState:CMP #FlowFinal:BNE @+  ; (the game over's dissolve done: a new game)
     JSR flow_new_game
     JSR text_new_game
+    LDA #5:JSR speak                    ; (as the game's start)
 .@
     JSR stage_begin
 .run
@@ -58,10 +59,11 @@ ENDSECTION
     JSR air_step                        ; (the helicopter's state, after the spawn: the CPC's &329E)
     JSR crim_update
     JSR read_keys
+    LDX DissolveLeft:BNE none           ; (a dissolve: no keys, the CPC's &155D)
     LDX FlowState:BEQ keyed
     CPX #FlowArrested:BEQ arrest
     CPX #FlowContinue:BEQ offer
-    CPX #FlowOver:BEQ none
+    CPX #FlowEnding:BCS none            ; (the game's end)
     AND #KeyGear OR KeyLeft OR KeyRight ; (the time up: no pedals)
     JMP keyed
 .offer
@@ -88,31 +90,20 @@ ENDSECTION
     JSR draw_turbos
     JSR draw_car
     JSR page_draw                       ; (over everything)
+    JSR dissolve_run                    ; (or a dissolve: the CPC's &12CF)
     JSR msg_update                      ; (after the loop's requests)
     JSR panel_update
     JSR popup_update
     JSR show
     JSR road_commit                     ; (a fork passed: the streams to its branch, as the CPC's after its flip)
-
-    \\ the stage's phrase on its second loop (the CPC's &179F)
-
-    LDA StageLoops:CMP #255:BEQ @+
-    INC StageLoops
-    CMP #1:BNE @+
-    LDX StagePhrase
-    TXA:JSR speak
-    LDX StagePhrase:INX
-    CPX #4:BCC rotated
-    LDX #1
-.rotated
-    STX StagePhrase
-.@
+    JSR flow_shown                      ; (the stage's phrase, the game's end: the CPC's after its flip)
     JMP loop
 }
 
 \\ Begin the stage in the game (the CPC's &031E): its data, its number on the panel, its intro (the IRQ needed:
-\\ the harnesses call stage_start, which has none), then the rest of its start. The panel's other figures stay
-\\ as last drawn through the intro, as the CPC's do.
+\\ the harnesses call stage_start, which has none), then the rest of its start and its dissolve in (the CPC's
+\\ reset's, &162F; not in stage_start, whose callers have no loop to run it). The panel's other figures stay as
+\\ last drawn through the intro, as the CPC's do.
 \\
 \\ Inputs:
 \\     Stage
@@ -125,8 +116,10 @@ ENDSECTION
 {
     JSR stage_load
     JSR panel_start                     ; (the stage's number, as the CPC's reset before its intro: &21A1)
+    JSR random                          ; (that reset's dissolve in: the intro's own takes its place)
     JSR intro_run
-    JMP stage_start.reset
+    JSR stage_start.reset
+    LDA #&80:JMP dissolve_start         ; (in)
 }
 
 \\ Start the stage: the road, the car, the traffic, the criminal, the clock and the panel's figures.

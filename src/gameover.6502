@@ -1,0 +1,64 @@
+\\ gameover.6502 - the game's end (the CPC's &179E, &0445, &0470), in the gap after IRQ1V (D18). Not the CPC's
+\\ set road with the car following the criminal behind its dissolves (P8), nor its title: a new game instead.
+
+\\ After the show, no page or dissolve running (from flow_shown, the CPC's after its flip): once the game's over a
+\\ dissolve out (&041D), and once that's done the game over's sequence (&0445): as its reset (&15B8), the line
+\\ cleared, the face blanked and a dissolve in; Nancy's verdict.
+\\
+\\ Inputs:
+\\     FlowState
+\\
+\\ Outputs:
+\\     the flow's state, the dissolve's, the window's
+\\     A, X, Y: corrupted
+
+.over_shown
+{
+    LDX FlowState
+    CPX #FlowEnding:BCC done            ; (still playing)
+    BEQ ending
+    CPX #FlowFading:BNE done
+    INC FlowState                       ; (over)
+    JSR text_stage
+    LDA #&80:JSR dissolve_start         ; (in)
+    LDX #LO(MsgGameOver):LDY #HI(MsgGameOver)
+    LDA #MsgGameOverPrio:JMP msg_request    ; (textstate.6502's MESSAGE, which comes after this)
+.ending
+    INC FlowState                       ; (fading)
+    LDA #0:JMP dissolve_start           ; (out)
+done = flow_over.ret
+}
+
+\\ The game's end in the loop (the CPC's &0470): ending and fading wait on over_shown; over, the GAME OVER page
+\\ every loop while no dissolve runs (&0478), till Nancy's verdict is closed, then a dissolve out (&04DF); final,
+\\ a new game once that's done.
+\\
+\\ Inputs:
+\\     FlowState, the dissolve's and the window's
+\\
+\\ Outputs:
+\\     C: set for a new game
+\\     the flow's state, the page, the dissolve's
+\\     A, X, Y: corrupted
+
+ASSERT FlowFading == FlowEnding + 1 AND FlowOver == FlowFading + 1 AND FlowFinal == FlowOver + 1, "INC FlowState"
+
+.flow_over
+{
+    LDA DissolveLeft:BNE wait           ; (a dissolve: no page, nothing ends)
+    LDA FlowState
+    CMP #FlowOver:BCC wait              ; (ending, fading)
+    BNE ret                             ; (final, its dissolve done: C set)
+    LDA MsgState:BEQ closed             ; (MsgIdle)
+    LDX #LO(PageGameOver):LDY #HI(PageGameOver)
+    JSR page_request                    ; (textstate.6502's PAGE)
+.wait
+    CLC
+.ret
+    RTS
+.closed
+    INC FlowState                       ; (final)
+    LDA #0:JMP dissolve_start           ; (out; C clear)
+}
+
+ASSERT MsgIdle == 0

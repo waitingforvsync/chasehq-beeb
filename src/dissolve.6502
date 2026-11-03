@@ -1,0 +1,63 @@
+\\ dissolve.6502 - the dissolve (the CPC's &1337, docs/cpc-text.md): its request and state, in main RAM for the
+\\ intro, the stage's start and end and the game's end to ask for it; its step (dissolvestep.6502) in the data's
+\\ bank, through dissolve_run.
+
+SECTION GameVars
+.DissolveIn                             ; bit 7 set for in
+    SKIP 1
+.DissolveMask                           ; the next mask
+    SKIP 1
+.DissolveLeft                           ; loops left (0 none): the CPC's &1766 = 2 while it isn't
+    SKIP 1
+ENDSECTION
+
+\\ Start a dissolve (the CPC's &1337): its pattern 1-3 by a random number (AND 3, 0 taken as 1: the tables have
+\\ it twice), out or in. It ends a page, as the CPC's (both are its &1766); a page asked for doesn't end it
+\\ (the intro asks for its title every loop), and the game asks for none while one runs.
+\\
+\\ Inputs:
+\\     A: bit 7 set for in
+\\     Rng
+\\
+\\ Outputs:
+\\     the dissolve's state, Rng; PageOn 0
+\\     C: clear
+\\     A, X: corrupted; Z clear (DissolveLeft's load: 7 or 8)
+
+.dissolve_start
+{
+    STA DissolveIn
+    JSR random
+    AND #3
+    BIT DissolveIn:BPL @+
+    ORA #4                              ; (in: from 4)
+.@
+    TAX                                 ; 0-7
+    LDA #0:STA PageOn
+    LDA DissolveFirst,X:STA DissolveMask
+    LDA DissolveCount,X:STA DissolveLeft
+    CLC                                 ; (for flow.6502's: a state's done)
+    RTS
+}
+
+\\ A dissolve's step, if one's running (the CPC's &12CF with &1766 = 2): the data's bank paged in for it.
+\\
+\\ Inputs:
+\\     the dissolve's state
+\\     back
+\\
+\\ Outputs:
+\\     as dissolve_step's
+\\     A, X, Y: corrupted
+
+.dissolve_run
+{
+    LDA DissolveLeft:BEQ none
+    LDX bankdata:STX &FE30              ; ROMSEL: the data's bank
+    JSR dissolve_step
+    LDX bankcode:STX &FE30              ; ROMSEL: the code's back
+.none
+    RTS
+}
+
+    INCLUDE "../build/gen/dissolvepat.6502" ; the patterns' first masks and loops (tools/gentext.py)

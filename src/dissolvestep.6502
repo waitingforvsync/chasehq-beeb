@@ -1,0 +1,61 @@
+\\ dissolvestep.6502 - the dissolve's step (the CPC's &12CF with &1766 = 2) and its masks, in the data's bank:
+\\ dissolve_run pages it in (dissolve.6502).
+
+\\ A dissolve's step: the back playfield ANDed with its mask, 16 bytes for a pair of cells repeated over it;
+\\ then on to the next mask, but before the last loop. It is an effect, not speed critical (decisions D28): each
+\\ byte's step is the same AND, its operand patched for the mask's byte.
+\\
+\\ Inputs:
+\\     the dissolve's state: one running
+\\     back
+\\
+\\ Outputs:
+\\     the back playfield, the dissolve's state
+\\     A, X, Y: corrupted
+
+.dissolve_step
+{
+    ZA_AUTO2 at                         ; local: the playfield's page
+    ZA_AUTO1 from, codes                ; local: the mask's next packed byte; its codes left
+
+    LDA DissolveMask:ASL A:ASL A:STA from   ; (4 bytes a mask)
+    LDX #15 * 7 + 3                     ; X: the AND's operand, 7 bytes apart, from the last byte's
+.code
+    TXA:AND #3:BNE @+                   ; (0 in its low 2 bits at bytes 15, 11, 7 and 3: a packed byte's first)
+    LDY from:LDA DissolveMasks,Y:STA codes
+    INC from
+.@
+    LDA codes:AND #3:TAY
+    LDA DissolveAnds,Y:STA ands,X
+    LSR codes:LSR codes
+    TXA:SEC:SBC #7:TAX
+    BCS code
+    LDA back:STA at+1
+    LDA #0:STA at:TAY                   ; (Y 0, as each page's last INY leaves it)
+    LDX #HI(PlayBytes)
+.ands
+    FOR k = 0..15
+        LDA (at),Y:AND #&FF:STA (at),Y  ; self-modified: the mask's byte k
+        INY
+    NEXT
+    BNE ands
+    SAME_PAGE ands
+    INC at+1
+    DEX:BNE ands
+    LDA DissolveLeft:DEC DissolveLeft
+    CMP #3:BCC done                     ; (2 left or 1: the last loop next, the same mask again, or none)
+    BIT DissolveIn:BMI in
+    INC DissolveMask
+    RTS
+.in
+    DEC DissolveMask
+.done
+    RTS
+}
+
+.DissolveAnds                           ; a code's AND operand: the code x &55
+    EQUB &00, &55, &AA, &FF
+
+    INPAGE DissolveMasksEnd - DissolveMasks ; (the masks read in a page)
+    INCLUDE "../build/gen/dissolve.6502"    ; the masks (tools/gentext.py)
+.DissolveMasksEnd

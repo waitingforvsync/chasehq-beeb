@@ -231,7 +231,8 @@ intro, and run from there, calling everything directly as the game loop does. Th
 (&2600, cleared whole by road_start), and if it needs more the right edge's tables after it (cleared by
 road_start too, so the entries above the road stay 0, D25). Not chosen: running it from the stages bank with
 trampolines, or the data bank and the main RAM gap. The dissolves inside the game loop (the stage reset's,
-the stage end's, the game over's) can't use the overlay, as the road needs that RAM then: still to place.
+the stage end's, the game over's) can't use the overlay, as the road needs that RAM then: still to place
+(placed: D29, was P11).
 
 ### D27. The intro paced at 3 frames a loop at least, with the review's P1 under it (2026-11-03; was P10)
 The intro's loop (D26) had no pace of its own: wait_back and show end each loop on a frame, so it ran as fast
@@ -243,6 +244,35 @@ loop fewer) would take it to 2.19 frames a loop unpaced, about twice the CPC's s
 to at least 4 frames (the CPC's idle loop) on irqframes, with P1 under it; or 3 (the BBC's pace before P1),
 or none. Rich: "Go with pace of 3, and do your proposal". So each loop is held to at least 3 frames from
 the one its last playfield went up in, and P1 goes in.
+
+### D28. The dissolve is for room, not speed (2026-11-03)
+The dissolves' review offered faster steps: q2 (merged, as no larger: a kept byte by two BITs, the second
+reading &xx91 with xx at's address, which Baron can't ASSERT is below &FC), q4 (at pinned at &04, two pool
+bytes), glite (34 bytes) and g2 (47 bytes), up to 54,107 cycles a dissolving loop fewer. Rich: "the dissolve
+isn't perf critical, it's just an effect". So none of the trades, and q2's patched opcodes are out: each byte
+is the same AND with its operand patched, as before, from a 4-byte table, with q2's walk down the bytes (no
+inner count) and the review's two byte trims. 60 bytes free in the data bank, against 50 for either.
+
+### D29. The dissolve's place; the game's end in the gap after IRQ1V (2026-11-03; was P11)
+The in-game dissolves (D26) need the dissolve resident: 339 bytes as the overlay had it (dissolve_start 29,
+dissolve_step 218, the packed masks 76, the patterns 16), and no region had that free. Measured in trial
+builds: the step and masks (294 bytes) in the stages bank, the overlay's copy gone, exceed its guard by 92
+bytes; in the data bank they fit. So the step and masks are in the data bank (`dissolvestep.6502`: 338 -> 50
+free), and the request, the patterns and `dissolve_run`, which pages the data bank in for the step, are in
+main RAM under the decoder (`dissolve.6502`: 124 -> 54 free). The intro calls them, so its overlay drops to
+599 bytes raw, 516 packed (the stages bank 70 -> 279 free). The game's end then overran main RAM's code by 62
+bytes, so, as D18 has it, new small routines went into the gaps: the game's end (`gameover.6502`: over_shown
+and flow_over, 78 bytes) into the gap after IRQ1V (&206-&257: MainVars, never used, its virtual section
+dropped), and msg_close (19 bytes) into the &259 gap. Main RAM's code now ends 21 bytes short of GameVars
+(26 after the review's m-flow; 19 first written here, a mistake).
+Re-tried after D28 (the step 16 bytes smaller, the overlay without its copy): the step and masks (278 bytes)
+now fit the stages bank, leaving it 2 bytes free and the data bank 338; the same code, dissolve_run paging
+bankstages.
+Rich: "if it works as it is let's stick with that. My understanding is that it's a full screen effect when
+gameplay is paused, so frame rate isn't a huge concern. If it can be made smaller, this is a candidate for size
+optimisation if we need it". So it stays as built: the step and masks in the data bank, the rest in main RAM.
+(The dissolve covers the playfield, the panel left as it is; the loop still draws the world under it each
+loop, with the controls zeroed and the clock stopped.) The ways to make it smaller are in O5.
 
 ---
 
@@ -304,7 +334,10 @@ The CPC's game over (`&0445`) resets the stage onto a set record and lets the ca
 with no input, behind a dissolve, then goes to the title. Until there's a title and the dissolve, the BBC's
 leaves the world as it is (the car stopped), shows Nancy's verdict and the GAME OVER page, and starts a new
 game when the verdict's closed. The continue offer, its countdown and the tenth bonuses after one are the
-CPC's.
+CPC's. With the dissolves (2026-11-03): the CPC's dissolve out before its sequence, its reset's text clearing
+and dissolve in (onto the world as it was, stopped), the GAME OVER page while no dissolve runs, and a dissolve
+out once the verdict's closed (the CPC also waits for the criminal to have gone); then a new game, with phrase
+5 as at the game's start, in place of the title.
 
 ### P9. Where the text and the turbo icons live (2026-10-31, Claude)
 The text's data (2,439 bytes: font, faces, scripts, pages) fills the &259-&CFF gap, read from both banks with
@@ -386,6 +419,14 @@ multi-load: kept packed there and unpacked over the stage's slots at each stage 
 and stage 1 must be kept too for the next game (22,969 in all), plus the helicopter and the gantry, against
 16,384, with the code bank full. Not with the speech; without it (two spare banks, 32K), yes. Mirroring the
 sprites as they're drawn saves 0-788 bytes a stage before packing: not the difference.
+
+The dissolve (D29: a candidate if room is needed; 2026-11-03): 278 bytes in the data bank (the step 198, its
+table 4, the masks 76) and 70 in main RAM. Measured: the step and masks fit the stages bank instead, leaving
+it 2 bytes free and the data bank 338. Not built (estimates): a column walk (each of the mask's 16 bytes
+ANDed down its column, every 16th byte, kept bytes skipped), about 95 bytes smaller, a dissolving loop about
+132K cycles on average and 186K at most against 125,550 (from the masks: 11 of 16 bytes not kept on average,
+16 in the late loops); the direction kept as the step (&FE in, 0 out), 3 bytes. Unlike the CPC: one pattern
+only, 48 bytes of masks and most of the pattern tables.
 
 ### O4. Keys, and whether to read a joystick
 The ADC is off for the rupture's timing, as in Teddy Boy.

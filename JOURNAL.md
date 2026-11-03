@@ -1056,3 +1056,83 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
 - bench.py against the review's base: IDENTICAL, no loop's cycles changed.
 - Room against P4: the overlay 945 -> 956 bytes raw (68 free of 1,024), 711 -> 725 packed; the stages' bank
   84 -> 70 free. The other regions unchanged.
+
+### The in-game dissolves (decisions P11; P8 updated)
+- The CPC's other dissolves, traced from the CPC (`work/dissolve/trace_cpc.py`, a row a loop: &1766, &179E,
+  the clock, &1765, the count, &179F, speed, the generator, and every request):
+  - Stage start: the reset's dissolve in (&15B8, after the intro) runs the first 7 or 8 loops. Speed stays 0
+    (&155D zeroes the controls), the seconds' tick stays 15 (&1FF0 returns), and &179F waits (the checks
+    after the flip skip while &1766 isn't 0), so the stage's phrase plays after the second loop after it.
+  - Stage end: state 5 sees the bonus page gone, asks for a dissolve out (&0FB9) and draws its first step in
+    the same loop; state 6, the loop after its last, the next stage (&031E).
+  - Time up with a continue: the offer's last loop beeps and asks for its page as every loop does (&209A),
+    then &179E = 1; the page shows 10 loops, then after the flip of its last a dissolve out (&041D); after
+    that one's last, the game over's sequence (&0445): a reset with its dissolve in and Nancy's verdict, the
+    GAME OVER page from the loop after it every loop, a dissolve out (&04DF) once the verdict's closed and the
+    criminal's gone, then the title.
+  - Quit (no continues: &1590): the message closed with the TIME UP page gone, &179E = 1, the same after.
+- The BBC's (`work/dissolve/trace_bbc.py`: the real loop from `game` in py65, wait_back an RTS, show
+  flipping `back` itself, speak and intro_run RTSs): each case matches the CPC's loop for loop, as above (the
+  CPC's reset makes 2 flips of its own with no loop, which the BBC doesn't). The patterns differ from the
+  traces' only by the generator, which the harness doesn't sync (it skips the intro).
+- The game: `flow_shown` after the show (the CPC's after-flip checks: nothing while a page or dissolve runs;
+  the phrase; the game's end), keys zeroed while a dissolve runs, the clock stopped, `dissolve_run` after
+  page_draw; FlowEnding, FlowFading, FlowOver and FlowFinal for &179E 1 and 2, the sequence and its last
+  dissolve. P8 stays: the sequence dissolves in onto the world as it was, stopped, and a new game (with
+  phrase 5, as the game's start) takes the title's place. stage_begin makes the reset's generator call before
+  the intro and asks for its dissolve in after; stage_start, the harnesses', has none.
+- Mistakes found on the way, both the BBC's from before: the phrases rotated 3, 1, 2 (stage 2 played phrase 1;
+  the CPC's &0342 decrements, 3, 2, 1); the offer's last loop had no beep and no page, so the page would have
+  ended a loop early.
+- Room (P11): the step and masks in the data bank (338 -> 50 free); the request, the patterns and
+  dissolve_run under the decoder (124 -> 54); msg_close (the CPC's &1E20, the quit's and the intro's gear's) in
+  the &259 gap (the &FE pad 46 -> 26); the game's end (over_shown, flow_over) in the gap after IRQ1V, MainVars
+  never having been used (82 -> 4); main RAM's code's end 66 -> 21 free (19 here at first: a mistake, below);
+  GameVars 46 -> 43. The overlay 725 -> 516
+  bytes packed, so the stages' bank 70 -> 279 free. A trial with the step in the stages' bank was 92 over.
+- compare_intro.py: stages 1-5 0 differ, gear at 60 the same close (the step through dissolve_run, 22 cycles
+  a dissolving loop more).
+- jsbeeb with the real IRQ (`work/dissolve/pace.mjs`): stage 1's first loops, the dissolve 7 to 1 with the
+  tick at 15 and speed 0, 8.0-8.3 frames a loop; then 4.3-5.0 (the loop with speech 3 excepted, which blocks).
+  The AND of 8K is about 3 frames, as the CPC's 230,091 T is.
+- The loop without a dissolve (`work/dissolve/cost.py`: both builds' real loops in py65 from the same state,
+  600 loops of the bot, the same screens and state after every one): +69.5 cycles a loop on average (50 to
+  72) against 3fcfa32, of about 169,800: the clock's and keys' tests, dissolve_run's, flow_shown's.
+- bench.py (its loop as before) against 3fcfa32: window, pages, static and drive IDENTICAL; arrest from
+  record 271 (the bonus page gone: the dissolve) and timeup from 1011 (the offer's last loop), as designed.
+  Its loop now mirrors the game's (dissolve_run, flow_shown, keys, the reset's dissolve; the old one kept as
+  bench.py.pre-dissolve), for the reviews from here.
+
+### The dissolves' review (m-flow and a smaller step merged; decisions D28)
+- The review (work/review-dissolve/) found no bugs and built eight patches, each exact: a step test of 152
+  cases (19 masks, in and out, 8, 3, 2 and 1 loops left, both playfields filled from an LFSR) the same as the
+  base; trace_bbc.py's four cases line for line; compare_intro.py 0 differ; bench.py IDENTICAL. Its faster
+  steps (the review's model, all 19 masks weighted as the patterns draw them; a dissolving loop 125,865
+  cycles): q2 102,959, the same bytes; q4 91,268, two pool bytes; glite 78,321, 34 bytes; g2 71,758, 47 bytes.
+- I merged q2 and m-flow as faster and no larger. q2 made a kept byte two BITs, the second reading &xx91 with xx
+  at's address: I/O if `at` landed at &FC-&FE, and Baron refuses `ASSERT at < &FC` ("Incompatible types": a
+  ZA_AUTO address isn't known while it assembles). Rich: "the dissolve isn't perf critical, it's just an
+  effect" (D28). So q2's patched opcodes came out again, and none of the trades went in.
+- The step now: each byte the same AND, its operand patched from a 4-byte table (DissolveAnds, the code x &55)
+  in place of the 14 bytes that computed it; q2's walk down the bytes (X = 7k + 3, a new packed byte when X's
+  low 2 bits are 0, so no inner count; gentext.py packs the codes last first); the page loop's LDY #0 one TAY
+  before it (Y is 0 after each page's last INY); the last loop's test by CMP #3. The step test: 152 cases, 0
+  differ; a dissolving loop 125,865 -> 125,550 cycles.
+- m-flow: flow_shown counts by LDX StageLoops:INX:BEQ and rotates the phrase by DEC StagePhrase; arrest_update
+  INC ArrestState for 6; over_shown tests below FlowEnding first and shares flow_over's RTS, and flow_over's
+  final state returns the C its CMP set. speak takes the phrase in A alone (it TAXes), so the X the old code
+  loaded wasn't needed.
+- In the main tree against the review's base (the tree before): trace_bbc.py start, arrest 700, over 330 and
+  quit 200 the same byte for byte; compare_intro.py stages 1-5 0 differ, gear at 60 the same close, stage 1's
+  dissolving intro loops 200,941 -> 200,626 cycles on average; cost.py 600 loops, the state the same after
+  every one, -4.9 cycles a loop (-4 to -11); bench.py IDENTICAL, a dissolving loop 315 cycles fewer, the others
+  4 to 6 fewer, the game-over states up to 2 more (over_shown's extra test).
+- Room: the data bank 50 -> 60 free (packed 2,542 -> 2,538); main RAM's code 9,418 -> 9,413 bytes (packed
+  6,902 -> 6,889), ending at &25E6, 26 short of GameVars; the gap after IRQ1V 4 -> 5 free; the rest unchanged.
+- Mistake: the entry above (and P11) had main RAM's code ending 19 bytes short. &0121 + 9,418 is &25EB: 21.
+- The stages' bank re-tried (a scratch build): the step and masks, 278 bytes, now fit it with 2 bytes left
+  (16,104 -> 16,382 raw), the data bank then 338 free; the earlier trial's 92 over was with the larger step.
+- Not built (the review's): DissolveIn as the step less 1 (3 bytes in the base's step; it changes
+  trace_bbc.py's logged A); page_draw ending JMP dissolve_run (bytes moved between regions).
+- Rich kept the dissolve as built, in the data bank (decisions D29, was P11): it pauses play, so its speed
+  doesn't matter much, and its size is a candidate if room is needed (the options in O5).
