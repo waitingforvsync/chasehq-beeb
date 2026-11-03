@@ -45,7 +45,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(__file__))
 from cpc import CPC, mode0_pens                     # noqa: E402
 from cpcdsk import read_dsk                         # noqa: E402
-from gendata import pair_for, mode2_byte, BBC_RGB, siren_colours, panel_bytes   # noqa: E402
+from gendata import pair_for, mode2_byte, dither, BBC_RGB, siren_colours, panel_bytes   # noqa: E402
 
 BASE = 0x59AB                                       # the stage block's address
 FONT = 0x56BF                                       # the message font: 16 bytes a glyph, 2 bytes by 8 lines
@@ -86,6 +86,11 @@ PAGES = [
     ('PageArrest', 'arrest', '&1003: the stage end\'s state 3 (the stage record\'s (&5BDC))'),
     ('PageBonus', 0x118D, '&10B6: the stage end\'s state 4, its figures patched first'),
 ]
+INTRO_TITLE = ('PageIntro', 0x05CB, '&0672: the intro\'s title (&1393 directly, size 1), asked for every intro loop')
+INTRO_COLOURS = [                                   # the intro's CPC bytes (&05E9, &0571): its label, the byte
+    ('IntroFill', 0xFF), ('IntroTop', 0x0C), ('IntroBottom', 0x3F), ('IntroRight', 0xAE), ('IntroLeft', 0x7F),
+    ('IntroLitA', 0xFC), ('IntroLitB', 0xFD), ('IntroDimA', 0x0F), ('IntroDimB', 0x5F)]
+INTRO_LIGHTS, INTRO_LIGHTS_W, INTRO_LIGHTS_H = 0xE6E0, 5, 17   # the lights (&0658), drawn by &2860
 PATCHES = {                                         # a patched character's CPC address: label, glyphs
     0x12CB: ('PageContinueTime', 2),                # "TIME nn": tens or space, units (&20C7)
     0x11A1: ('PageBonusClear', 2),                  # the clear bonus's leading figures (&102F)
@@ -239,6 +244,18 @@ class Text:
             at += d - 1
             p = nxt
         self.pages.append((label, at, entries, where))
+
+    def entry_page(self, label, a, where):
+        """An entry &1393 draws directly, size 1, its offset at a and its text after: a page of it alone, on
+        its first loop and gone after it (asked for again each loop, as the CPC draws it)."""
+        m = self.m
+        off = m.rw(a)
+        line, cpcrow, cell = off >> 11, (off & 0x7FF) >> 6, off & 63
+        assert line == 7, 'size 1 starts the line above a row'
+        row = cpcrow - 8 + 1
+        s, _ = m.text(a + 2)
+        assert row >= 1 and row + 1 <= 15 and cell + 1 + 2 * len(s) <= 63, 'off the playfield'
+        self.pages.append((label, 1, [(1, 1, row, cell, s, {})], where))
 
 
 # drawing from the BBC bytes, as the 6502 would (for the previews)
@@ -410,6 +427,7 @@ def build(stage, cpc, files):
     names = {a: name for name, a, _, _ in roots}
     for label, a, where in PAGES:
         t.page(label, m.rw(0x5BDC) if a == 'arrest' else a, where)
+    t.entry_page(*INTRO_TITLE)
 
     def label(a):
         return names.get(a, f'Msg{a:04X}')
@@ -636,13 +654,17 @@ def main(out):
     recs = [cpc.mem[MASKS + 16 * k:MASKS + 16 * k + 16] for k in range(MASK_COUNT)]
     w('\\\\ the dissolve (&1337): 19 masks for a pair of cells (even, odd), the same for every pair in the playfield,')
     w('\\\\ in the screen\'s order: byte i for cell i DIV 8 of the pair, line i AND 7 (the CPC has them by line, even')
-    w('\\\\ then odd byte). A pattern ANDs one into the back playfield each loop for its count of loops, stepping,')
-    w('\\\\ and draws its last one twice (no step on its last loop). Out (the CPC\'s A >= 0) steps +1, in steps -1.')
-    w('\\\\ Pattern 1 + (random AND 3), 0 taken as 1')
+    w('\\\\ then odd byte). Every byte is &00, &55, &AA or &FF, a code 0-3 times &55: packed 4 codes a byte, byte i')
+    w('\\\\ in bits 2(i AND 3) up of the mask\'s byte i DIV 4. A pattern ANDs one into the back playfield each loop')
+    w('\\\\ for its count of loops, stepping, and draws its last one twice (no step on its last loop). Out (the')
+    w('\\\\ CPC\'s A >= 0) steps +1, in steps -1. Pattern random AND 3, 0 taken as 1')
     w()
     w('.DissolveMasks')
     for k, r in enumerate(recs):
-        w.equb(hexes(r[2 * (i & 7) + (i >> 3)] for i in range(16)), f'{k}: the CPC\'s &{MASKS + 16 * k:04X}')
+        scr = [r[2 * (i & 7) + (i >> 3)] for i in range(16)]
+        assert all(b == (b & 3) * 0x55 for b in scr), 'a mask byte not a code times &55'
+        packed = [sum((scr[4 * j + t] & 3) << 2 * t for t in range(4)) for j in range(4)]
+        w.equb(hexes(packed), f'{k}: the CPC\'s &{MASKS + 16 * k:04X}')
     pats = []
     for sign, table in ((1, 0x5305), (-1, 0x530E)):
         for p in (1, 2, 3):
@@ -650,13 +672,41 @@ def main(out):
             first = (ptr - MASKS) // 16 + sign
             pats.append((first, count, [first + sign * min(i, count - 2) for i in range(count)]))
             assert all(0 <= k < MASK_COUNT for k in pats[-1][2])
-    w('.DissolveFirst', 'the first mask: out patterns 1-3, then in 1-3')
-    w.equb([str(f) for f, _, _ in pats])
+    order = [0, 0, 1, 2, 3, 3, 4, 5]                    # (by random AND 3, + 4 in: 0 taken as 1)
+    w('.DissolveFirst', 'the first mask: out by random AND 3 (0 as 1), then in')
+    w.equb([str(pats[i][0]) for i in order])
     w('.DissolveCount', 'its loops')
-    w.equb([str(c) for _, c, _ in pats])
+    w.equb([str(pats[i][1]) for i in order])
     sizes['dissolve'] = w.bytes - n0
 
     with open(os.path.join(out, 'dissolve.6502'), 'w') as f:  # (its own file: it goes where there's room)
+        f.write('\n'.join(w.lines) + '\n')
+
+    # the stage intro's colours and lights (&04E5, docs/cpc-logic.md)
+    w = Out()
+    w.lines = ['\\\\ intro.6502 - made by tools/gentext.py from the CPC disc: do not edit.', '',
+               '\\\\ the stage intro\'s colours (the CPC\'s &04E5): each CPC byte\'s MODE 2 byte on even lines (0) and odd',
+               '\\\\ lines (1), its pens dithered (D7) by x + y parity, a byte\'s left pixel at an even x', '']
+    for name, b in INTRO_COLOURS:
+        p0, p1 = mode0_pens(b)
+        for par in (0, 1):
+            v = mode2_byte(dither(pairs, p0, 0, par), dither(pairs, p1, 1, par))
+            w(f'{name}{par} = &{v:02X}', f'the CPC\'s &{b:02X}' if par == 0 else None)
+    w()
+    pens = cpc_pens(m, INTRO_LIGHTS, INTRO_LIGHTS_W, INTRO_LIGHTS_H)[::-1]   # (stored bottom up: &2860 draws
+    cols = block_colours(pens, pairs)                                           # its first line at y, then up)
+    fill = mode0_pens(0xFF)[0]
+    for y, row in enumerate(pens):              # (&2860 leaves pen 0 out: the fill shows, its own dither, as
+        for x, p in enumerate(row):             # the lights sit at an even x and an even line)
+            if p == 0:
+                cols[y][x] = dither(pairs, fill, x, y)
+    lights = column_bytes(cols, range(INTRO_LIGHTS_H))
+    w(f'IntroLightsW = {INTRO_LIGHTS_W}')
+    w(f'IntroLightsH = {INTRO_LIGHTS_H}')
+    w('.IntroLights', f'the CPC\'s &{INTRO_LIGHTS:04X}: {INTRO_LIGHTS_W} columns of {INTRO_LIGHTS_H} lines, top first')
+    for c in range(INTRO_LIGHTS_W):
+        w.equb(hexes(lights[c * INTRO_LIGHTS_H:(c + 1) * INTRO_LIGHTS_H]), per=INTRO_LIGHTS_H)
+    with open(os.path.join(out, 'intro.6502'), 'w') as f:
         f.write('\n'.join(w.lines) + '\n')
 
     # previews

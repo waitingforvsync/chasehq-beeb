@@ -431,7 +431,14 @@ Bugs and quirks (all verified unless marked):
 - **The curve's fractional offset is always 7/8** (`&5126`: `A` = `&EE`, not the fraction, at the
   `CALL &52F2`). The hill uses `f/8` properly. So curves step sideways once a segment instead of sliding.
 - Lane tables: the first entry (`&30`) takes a stale carry: one lane pixel on the top line can be one
-  half-pixel off (the 5 unmatched frames).
+  half-pixel off (the 5 unmatched frames). In full (2026-11-02, `work/road/stalechain.py`, `check_top.py`):
+  the loop runs over all 104 entries, so the borrow reaching the road's top entry has come down through the
+  entries above it, which nothing pushes. The stale carry at `&30` itself never matters: from either start the
+  borrow arriving at the top real entry is the same. The leftovers do matter. Before any fork they never change; a fork's split
+  (`&40F6`, from `&30` too) rewrites `&7E`'s (14 loops in stage 3, then settled: `&7D` and `&7E` averaged
+  toward `&7F`'s leftovers each frame). Stage 3, 479 loops without a fork: a borrow into the top entry in
+  178, none in 301. Row 20's anchor reads the top entry whenever its segment ends there, so it's out by one
+  where a lane table gives its edge (decisions D25: left).
 - After a crest the edge pusher emits the segment's raw line count while the renderer draws the accumulated
   one, so edges beyond a crest are read a few entries out of step. Hidden segments also skip the stripe
   bookkeeping, so stripes beyond a crest are out of phase.

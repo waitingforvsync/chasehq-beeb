@@ -25,6 +25,34 @@ StageParts = 5
     EQUB 0, bankcode, bankstore, bankstore, bankstore
     ASSERT P% - StagePackBank == LEN(StagePacks), "a bank for each pack"
 
+\\ The stage intro (intro.6502, the overlay: decisions D26): unpacked from the stages' bank over RoadWindow and the
+\\ edge tables and run; then the edge tables cleared (road_start clears RoadWindow), so the entries above the
+\\ road are 0 again (D25).
+\\
+\\ Inputs:
+\\     as the intro's
+\\
+\\ Outputs:
+\\     as the intro's; RoadWindow overwritten, the edge tables 0
+\\     A, X, Y: corrupted
+
+.intro_run
+{
+    LDA #LO(IntroPack):STA unzx.src
+    LDA #HI(IntroPack):STA unzx.src+1
+    LDA #LO(RoadWindow):STA unzx.dst
+    LDA #HI(RoadWindow):STA unzx.dst+1
+    LDA bankstages:STA &FE30            ; ROMSEL: the stages'
+    JSR unzx.unpack
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    JSR intro
+    LDA #0:TAX
+.clear
+    STA EdgeRLo,X:STA EdgeLLo,X:STA EdgeR2Lo,X  ; (each page a table's low and high bytes)
+    INX:BNE clear
+    RTS
+}
+
 \\ Each part's bank (its zero page byte) and pieces
 
 PartPieces = {HeliPieces, RoadPieces, SpriteTablePieces, SpritePartPieces, TextPieces}

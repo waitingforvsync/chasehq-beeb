@@ -211,6 +211,39 @@ cycles a loop in stage 3 and 3,938 -> 3,430 in stage 5; the code bank 12 -> 100 
 237. Rich: "ok let's add p2". Not taken: P24 (the fills read from main RAM: 400 cycles more in stage 3 for 114
 more bytes of the gap). The decoder, which P2 pushed across &0B00, moved to the gap's top, under &D00.
 
+### D25. Row 20's anchor: the CPC's stale borrow left out (2026-11-02)
+Row 20's anchor and the lanes' top entry are one out in some loops (stage 3: 47 and 49 of 600). Both lane loops
+run over all 104 entries from the top, and the CPC's chains its borrow down through the entries above the
+road. Those hold leftovers, which the CPC's fork split rewrites (from &30, where the BBC's starts at the
+road's last entry); the BBC's are 0. With the CPC's leftovers copied into the BBC's edge tables each loop,
+both go to 0 of 600. Matching it for real needs the split over the leftover entries too (152 cycles an entry,
+about 18: 2,736 cycles a frame in a fork), the CPC's leftovers at the start (4 tables, about 150 bytes), and
+still can't follow the CPC across its attract mode. What's out: row 20's objects by a quarter-byte (a BBC
+column only when that crosses a byte) and one lane pixel on the top line. Recommended leaving it, the BBC's
+borrow being what the CPC's would be with clean tables. Rich: "leave it".
+
+### D26. The stage intro as an overlay in main RAM (2026-11-02)
+The intro (the CPC's &04E5: the frame, lights, title, bars, the car revealed, the briefing, its dissolves in
+and out) needs about 300 bytes of code by estimate, and the dissolve's code and 19 masks on top; no region had
+that free. Offered three places, Rich chose "Overlay in main RAM (Recommended)": kept packed in the stages
+bank, unpacked at each stage's start into main RAM only the game proper uses, which is rewritten after the
+intro, and run from there, calling everything directly as the game loop does. The place: RoadWindow
+(&2600, cleared whole by road_start), and if it needs more the right edge's tables after it (cleared by
+road_start too, so the entries above the road stay 0, D25). Not chosen: running it from the stages bank with
+trampolines, or the data bank and the main RAM gap. The dissolves inside the game loop (the stage reset's,
+the stage end's, the game over's) can't use the overlay, as the road needs that RAM then: still to place.
+
+### D27. The intro paced at 3 frames a loop at least, with the review's P1 under it (2026-11-03; was P10)
+The intro's loop (D26) had no pace of its own: wait_back and show end each loop on a frame, so it ran as fast
+as it drew, and every saving in it played the briefing faster. Measured, stage 1: the BBC with the real IRQ
+(jsbeeb, the review's pace.mjs) 3.19 frames a loop (864 frames, 271 loops, 17.3 s); the CPC 4.56 (1,191
+frames over the 261 loops from &04ED, by tools/cpc.py with its 1.2 wait-state guess): 4 a loop idle, 3 and 6
+by turns while printing, 8-11 while dissolving. The review's P1 (the frame a row at a time, 38,417 cycles a
+loop fewer) would take it to 2.19 frames a loop unpaced, about twice the CPC's speed. Proposed: hold each loop
+to at least 4 frames (the CPC's idle loop) on irqframes, with P1 under it; or 3 (the BBC's pace before P1),
+or none. Rich: "Go with pace of 3, and do your proposal". So each loop is held to at least 3 frames from
+the one its last playfield went up in, and P1 goes in.
+
 ---
 
 ## Proposed

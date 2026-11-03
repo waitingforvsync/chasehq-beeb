@@ -5,7 +5,8 @@
 \\   &0100  the stack's sentinel, then the stack: 32 bytes
 \\   &0121  main RAM's code: the IRQ, and what must see two banks. IRQ1V at &204 (MainVars after it),
 \\          &258 = 2 (clear on BREAK), an RTI at &D00 for stray NMIs (claimed from the filing system)
-\\   &2600  the game's variables (GameVars), the stage's sprite tables among them
+\\   &2600  the game's variables (GameVars), the stage's sprite tables among them; at a stage's start the intro
+\\          runs from &2600-&29FF, over RoadWindow and the edge tables (intro.6502, D26)
 \\   &3000  the panel: 8 rows of 512 bytes, single-buffered
 \\   &4000  playfield A: 16 rows of 512 bytes
 \\   &6000  playfield B. CHASE2 loads at &4000 or higher: main RAM's code and the panel packed by ZX02,

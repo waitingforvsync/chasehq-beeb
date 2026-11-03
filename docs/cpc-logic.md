@@ -544,6 +544,32 @@ Obstacles (cones) don't bounce the car: they fly (see Roadside obstacles).
 - **Intro** (`&04E5`): a dissolve in, "CHASE H.Q. MONITORING SYSTEM", Nancy's briefing (`&5BDA`, priority
   `&FF`) printed a character a loop, two random bars (2 RNG calls a loop), the target car revealed a line a
   loop for 49 loops (not on stage 5). Gear skips the briefing (speech 5). About 1,000 CPC frames unskipped.
+  In full (2026-11-03, from `&04E5`-`&0690`; `work/intro/trace_intro.py`, `compare_intro.py`), in the BBC's
+  playfield's lines (the CPC's screen line less 64) and byte columns:
+  - **Start**: `&15B8` with the stage record (a reset that starts a dissolve in of its own: 1 RNG call),
+    then a dissolve in (`&1337`, A = `&F0`: 1 RNG call), the car's lines (`&05A7`) 0, the briefing asked for
+    at priority `&FF`.
+  - **Each loop** (`&04FE`), into the back buffer: the frame (`&05E9`), the window (`&1DD4`), the bars
+    (`&053A`), the car (`&05A0`), pages and the dissolve (`&12CF`), the flip. The flip patches the bars' and
+    the car's fixed addresses (`&83EE`, `&A4AE`, `&84DB`) to the back buffer, so all of it is in both.
+  - **The frame**: every line `&FF` (pen 15); the playfield's edges, top lines 0-1 `&0C`, bottom 126-127
+    `&3F`, column 63 lines 2-125 `&AE`, column 0 the same lines `&7F`; the car's box the same way, lines 40-41
+    and 102-103 over columns 23-42, columns 42 and 23 over lines 42-101 (the uprights drawn up the screen by
+    `&1542`). Then the lights (`&E6E0`, 5 bytes by 17 lines stored bottom up, pen 0 left out) by `&2860` at
+    x 32 (byte 8), bottom lines 64 and 96; then the title, a size 1 entry (its offset at `&05CB`, its text
+    after) by `&1393`.
+  - **The bars**: two levels (`&053F`, `&055C`, self-modified and never reset), each a random number a loop:
+    bit 7 clear one up to 7, set one down to 0. Each is 7 cells of 2 bytes on two lines from byte 46, at lines
+    56 and 84: the level's cells `&FC &FD`, the rest `&0F &5F`.
+  - **The car**: its lines count up to 49; the criminal's first image (the first of `&5BE6`'s descriptors),
+    its bottom min(lines, height) lines from line 88 up, at byte 27. Not in stage 5.
+  - **After the flip**: a dissolve running, again; the window idle, return; closing, a dissolve out (A =
+    `&10`, 1 RNG call) and again; otherwise gear (`&0E98` AND `&10`) closes the window there and then
+    (`&1E20`: static's 4 loops, state 3, the static's 640 RNG calls, the line cleared) and `&2095` plays
+    speech 5 and returns, with no dissolve out. Gear is read after the flip, under the next loop's keys.
+  - Stage 1 unskipped: 261 loops; the dissolve in through loop 7; the briefing's lines from loops 41, 78, 111,
+    151 and 183, the partner's reply on 226, the close on 254, the dissolve out from 255. 2 RNG calls a loop,
+    640 more in each static. The reset after it (`&15B8` again) starts another dissolve in.
 - **Game over** (`&0445`): silence, reset with a fixed record (`&0423`), speed 250, the criminal object 1
   segment ahead at 250 (from `&0431`), `&1756` = `&FF`, Nancy's verdict (`&1AC9`, priority `&FF`: one of
   three), the "GAME OVER" page while the world runs without input or clock, then a dissolve and the title.

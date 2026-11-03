@@ -939,3 +939,120 @@ What's been done, newest last, with measurements. Decisions are in `docs/decisio
   decoder, at &0BD3); GameVars 44 -> 48; data bank 338, store 172, stages' bank 796 as they were.
 - P2 moved sound.6502 up 117 bytes: its branches crossing pages changed (sound_frame's and set_tone's, in
   the IRQ, instead of three others).
+
+### Row 20's anchor: found, left (decisions D25)
+- check_road's row 20 differences are whichever edge comes from a lane table (stage 3: the right, BBC 38
+  against the CPC's 37 at loop 414; the docs had said the left), at the lanes' top entry: check_road leaves
+  that entry out of its table compare for "a carry from the stale entries above it". Stage 1's row 20 reads
+  the edges only, so never differs.
+- Both lane loops run from entry 103 (the CPC's index &30) over all 104 entries; the borrow chains down
+  through the entries above the road (86-103 in stage 3), which nothing pushes. `work/road/stalechain.py`
+  runs the CPC's chain from its own tables: from either starting carry the same borrow reaches the top entry
+  (so the stale carry at &30 never matters), and it matches the CPC's top entry in every loop without a fork;
+  a borrow in 178 of 479, none in 301. So a fixed CLC would be wrong more often than the BBC's SEC.
+- What's in the entries above the road (`work/road/stale_vary.py`, stage 3): one state through loops 0-299;
+  14 changes, all in the fork's first loops (301 on), all in &7E (entries 86-103): the CPC's split (&40F6)
+  starts at &30,
+  averaging &7D and &7E toward &7F's leftovers each frame. The BBC's split starts at the road's last entry
+  (SegCum+20), and its tables above the road stay 0.
+- Proof (`work/road/check_top.py`: check_road also counting the lanes' top entry; `inject` copies the CPC's
+  EdgeL and EdgeR entries above the road into the BBC's each loop): stage 3, 600 loops, the rows' anchors 47
+  -> 0 and the top entry 49 -> 0.
+- Matching it without the injection: the split from entry 103 (152 cycles an entry by count, about 18 more:
+  2,736 cycles a frame during a fork), the CPC's leftovers at the start (&7A, &7D, &7E, &7F above the road,
+  about 150 bytes), and it still couldn't follow the CPC across its attract mode. Rich: "leave it".
+
+### The stage intro (decisions D26: an overlay in main RAM)
+- Decoded from &04E5-&0690 (docs/cpc-logic.md, the intro in full): the frame redrawn into the back buffer
+  every loop (a fill and two boxes' edges), the lights (stored bottom up, pen 0 left out), the title as a page
+  entry drawn directly, two bars stepping by a random number each a loop, the criminal's car revealed from
+  its bottom a line a loop to 49 (not in stage 5), the briefing in the window, a dissolve in at the start and
+  one out as the window closes; gear while it prints closes the window there and then and plays speech 5,
+  with no dissolve out. The flip patches the bars' and car's fixed addresses, so all of it is in both
+  buffers. `work/intro/trace_intro.py`: stage 1 unskipped is 261 loops.
+- The BBC: `intro.6502`, an overlay kept packed in the stages' bank (946 bytes, 722 packed) and unpacked
+  over RoadWindow and the edge tables (&2600-&29FF) by `intro_run` (stageload.6502), which clears the edge
+  tables after it (road_start clears RoadWindow), so the entries above the road are 0 again (D25). It calls
+  everything directly, the code's bank paged in. The frame is 9 rectangles by the row runner, entered at the
+  first column with an RTS patched at the end (as the gantry's beam); the lights an opaque copy; the bars
+  their own; the car sprite_draw with lines from the bottom; the dissolve ANDs every byte of the back
+  playfield with the mask's 16 bytes, patched into an unrolled loop. The bar levels in GameVars (the CPC
+  never resets them).
+- gentext: the title as a one-entry page (PageIntro, asked for every loop, as the CPC draws it every loop),
+  the intro's colours as constants (each CPC byte's MODE 2 byte on even and odd lines), the lights (pen 0
+  the fill's own dither), and the dissolve's masks packed 4 codes a byte (every byte is a code times &55: 304
+  -> 76 bytes), unpacked into the AND operands each step.
+- game.6502: stage_begin (stage_load, the panel's stage number as the CPC's reset draws it before the
+  intro, intro_run, then stage_start's reset); stage_start unchanged for the harnesses (py65 has no IRQ for the
+  intro's wait_back and show). The game shows the cleared playfield B and turns the display on first, then
+  speech 5, then the stage.
+- Mistakes on the way: the bars are 7 cells, not 8 (the dim count is 7 less the level); the rectangles must
+  run fill first; two carries (dissolve_start's ADC, the mask address's x 16 past 255); the lights' lines are
+  stored bottom up (&2860 draws its first line at y and goes up), which the first comparison showed as 100
+  pixels a loop; the overlay was 1,158 bytes until the masks were packed; road_start's 4-page clear moved a
+  hot branch in the code bank across a page, so the edge tables are cleared by intro_run instead.
+- `work/intro/compare_intro.py` (the CPC in lockstep from its intro's dissolve, &04ED; the BBC's loop body
+  in py65; playfields compared as compare_gantry; the generator, bars, car lines, window state and dissolve
+  every loop): stages 1-5, 261, 234, 268, 271 and 266 loops, 0 differ, each ending on the CPC's loop; gear
+  held from loop 60 (stage 1): both close the window after loop 59, the generator and the window the same
+  after. jsbeeb: the intro, the skip and the unskipped hand-over into stage 1.
+- The loop's body (py65): 105,565-115,888 cycles on average without a dissolve, about 239,000 with one (the
+  AND of all 8K). The CPC's intro is about 3.8 frames a loop, so the BBC's is about its pace unpaced. (Wrong:
+  the review measured 3.19 frames a loop against the CPC's 4.56, below.)
+- The CPC's reset (&15B8) starts a dissolve of its own before and after the intro (1 RNG call each); the BBC
+  has no in-game dissolve yet (D26: still to place), so a stage start steps its generator 2 fewer times.
+- bench.py against 8b9e03a: IDENTICAL in all seven runs; whole loops +0.7 to +1.5 cycles on average (+17 at
+  most) against d1e5944, from code moved in main RAM.
+- Room: the stages' bank 796 -> 74 free (the overlay's pack); the store 172 -> 137 (the title page); the &259
+  gap 237 -> 189 (19, 46, 124: intro_run); main code's end 72 -> 69 (stage_begin); GameVars 48 -> 46; the
+  code and data banks unchanged (100 and 5; 338).
+
+### The intro's review (P4 merged; P1-P3 and the intro's pace for Rich, decisions P10)
+- The review (work/review-intro/) found four exact patches and no bugs. Each gives 0 differ in
+  compare_intro.py on stages 1-5 and with gear from loop 60, and bench.py IDENTICAL with no loop's cycles
+  changed: none touches main RAM, GameVars, or the code, data or store banks.
+- P4 merged, byte trims: IntroCarLines 0 from the unpack (EQUB 0); `.closing` ends BNE loop (dissolve_start
+  now ends with Z clear); each bar's cell by DEC lit:BMI; intro_car's ADC #1:STA; dissolve_step's LSR A for
+  the last loop; dissolve_start without its 0-as-1 branch (gentext.py emits 8-entry tables, 0 listed twice);
+  an INPAGE before the masks (the smaller code had moved them across &2900, a cycle more a load). The
+  overlay 946 -> 945 bytes raw, 721 -> 711 packed; the stages' bank 74 -> 84 free; nothing else moved.
+  Re-run in the main tree: compare_intro.py stages 1-5 (261, 234, 268, 271, 266 loops) 0 differ, gear at 60
+  the same close; stage 1's loop body without a dissolve 115,821 -> 115,789 cycles on average; bench.py
+  against the review's base IDENTICAL, no loop's cycles changed.
+- Mistake: the entry above said the BBC's intro is about the CPC's pace. The review measured it: the BBC 3.19
+  frames a loop (864 frames, 271 loops, 17.3 s; jsbeeb with the real IRQ, work/review-intro/js/pace.mjs), the
+  CPC 4.56 (1,191 frames over the 261 loops from &04ED, tools/cpc.py with its 1.2 wait-state guess: 4 a loop
+  idle, 3 and 6 by turns while printing, 8-11 while dissolving). The BBC's runs about 30% faster, and its
+  loop has no pace of its own, so every saving in it plays the briefing faster still.
+- For Rich: P1, the frame a row at a time (one runner_row a row, one Runner call a line with four patched
+  stores for the uprights, intro_rect and its 54 bytes of tables gone): intro_frame 96,531 -> 58,114 cycles
+  every loop; 10 bytes more raw, the same packed. Unpaced, it plays the intro at 2.19 frames a loop (593
+  frames, about twice the CPC's speed); I proposed a pace of 4 with P1 under it (Rich chose 3: below). P2,
+  the dissolve by keep, clear or AND (each unrolled step patched by the mask's code): a dissolving loop
+  239,334 -> 209,661 cycles on average, 15 bytes more packed. P3, the lights' address stepped by INC: 574 cycles a loop fewer, 2 bytes
+  more packed, no frame saved once P1 is in. All four: 579 frames, 723 bytes packed.
+- Not built (estimates): a 32-store run for the frame (about 42.8K cycles against P1's 58K, about 100 bytes
+  more than the window has free); the dissolve as code generated for each mask (about 562K cycles a pattern
+  against P2's 661K, about 30 bytes more packed); skipping the frame and title while a playfield is still
+  clean (a loop at 11-18K cycles, 1 frame unpaced).
+
+### The intro paced at 3 frames a loop, with the review's P1 (decisions D27)
+- P1 merged: the frame a row at a time. Each row by one runner_row, each line by one Runner call with that
+  line's byte, the uprights by four patched stores after it (columns 0 and 63, and 23 and 42 in the box's
+  rows), the box's top and bottom by two short Runner calls with an RTS patched at column 43; intro_rect and
+  its 54 bytes of tables gone.
+- The pace: `.loop` reads irqframes after wait_back into a local (`shown`), the frame its last playfield went
+  up in (the panel's top takes a request after irqframes' step at the playfield's end), and holds show till
+  irqframes is IntroPace (3) past it. Counting from show's call instead would let a request made during the
+  display be taken a frame late, and the next on time: 2-frame loops.
+- compare_intro.py (P4 and P1): stages 1-5, 261, 234, 268, 271 and 266 loops, 0 differ; gear at 60 the same
+  close, the generator and window the same. py65 runs the routines, not the loop, so the pace is jsbeeb's to
+  check. Stage 1's loop body without a dissolve 115,789 -> 77,387 cycles on average, with one 239,320 ->
+  200,919.
+- jsbeeb with the real IRQ (work/intro/pace.mjs: the frames each playfield is shown, from intro.shown):
+  stage 1's 271 loops, each playfield shown 3 frames 257 times, 5 frames 8 times and 6 frames 5 times (the
+  dissolves); never fewer than 3. 846 frames (16.9 s), against 864 before (the dissolves a frame quicker);
+  the game's loop reached after.
+- bench.py against the review's base: IDENTICAL, no loop's cycles changed.
+- Room against P4: the overlay 945 -> 956 bytes raw (68 free of 1,024), 711 -> 725 packed; the stages' bank
+  84 -> 70 free. The other regions unchanged.

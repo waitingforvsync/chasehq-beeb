@@ -27,7 +27,7 @@ STAGES = 1 2 3 4 5
 ROADOUT = $(GEN)/road.6502 $(GEN)/roadpieces.6502 $(foreach n,$(STAGES),$(GEN)/roadstage$(n).6502)
 SPROUT = $(GEN)/sprites.6502 $(GEN)/spriteslot.6502 $(GEN)/spritepieces.6502 $(GEN)/heli.6502 $(foreach n,$(STAGES),$(GEN)/spritestage$(n).6502)
 SPEECHOUT = $(GEN)/speech.6502 $(GEN)/speechstore.6502 $(foreach n,1 2 3 4 5,$(GEN)/speech$(n).bin)
-TEXTOUT = $(GEN)/text.6502 $(GEN)/dissolve.6502 $(GEN)/textpieces.6502 \
+TEXTOUT = $(GEN)/text.6502 $(GEN)/dissolve.6502 $(GEN)/intro.6502 $(GEN)/textpieces.6502 \
           $(foreach n,$(STAGES),$(GEN)/textstage$(n).6502)
 DEPS = $(wildcard src/*.6502) $(GENOUT) $(ROADOUT) $(SPROUT) $(SPEECHOUT) $(TEXTOUT)
 

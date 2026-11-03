@@ -26,10 +26,7 @@ ENDSECTION
     LDA #3:STA StagePhrase
     JSR flow_new_game
     JSR text_new_game
-    LDA #HI(PlayAddrB):STA back         ; (A shown first; B's free for stage_load meanwhile)
-    JSR stage_start
-    JSR road_frame
-    JSR road_draw
+    LDA #HI(PlayAddrB):STA back         ; (B, cleared, shown first; A's free for stage_load meanwhile)
     JSR show
     JSR wait_back                       ; (taken, or about to be)
 
@@ -45,7 +42,8 @@ ENDSECTION
 .@
     STA &FE00                           ; CRTC: the next handler's register
     CLI
-    LDA #5:JSR speak                    ; (the game's start: the CPC's phrase 5)
+    LDA #5:JSR speak                    ; (the game's start: the CPC's phrase 5, before the intro)
+    JSR stage_begin
 .loop
     JSR flow_update                     ; (last loop's speed, rams and overtakes)
     BCC run
@@ -53,7 +51,7 @@ ENDSECTION
     JSR flow_new_game
     JSR text_new_game
 .@
-    JSR stage_start
+    JSR stage_begin
 .run
     JSR road_advance
     JSR traffic_update
@@ -112,6 +110,25 @@ ENDSECTION
     JMP loop
 }
 
+\\ Begin the stage in the game (the CPC's &031E): its data, its number on the panel, its intro (the IRQ needed:
+\\ the harnesses call stage_start, which has none), then the rest of its start. The panel's other figures stay
+\\ as last drawn through the intro, as the CPC's do.
+\\
+\\ Inputs:
+\\     Stage
+\\
+\\ Outputs:
+\\     as stage_start's
+\\     A, X, Y: corrupted
+
+.stage_begin
+{
+    JSR stage_load
+    JSR panel_start                     ; (the stage's number, as the CPC's reset before its intro: &21A1)
+    JSR intro_run
+    JMP stage_start.reset
+}
+
 \\ Start the stage: the road, the car, the traffic, the criminal, the clock and the panel's figures.
 \\
 \\ Inputs:
@@ -124,6 +141,7 @@ ENDSECTION
 .stage_start
 {
     JSR stage_load                      ; (SkyTop and SkyOther 0: neither playfield's sky known to be drawn)
+.reset                                  ; (stage_begin's way in, after the intro)
     LDA #0:STA StageLoops
     JSR road_start
     JSR car_start

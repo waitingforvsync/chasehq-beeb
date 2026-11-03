@@ -117,8 +117,11 @@ the stage by test mode's key '2'), 600 loops each branch:
   through A, and its first `ADD A,A` (`&52AA`) drops bit 7 unused: it multiplies by |C| mod 128, so -128 adds
   nothing. Fix: `AND #&7F` on the magnitude (2 bytes, 2 cycles, on the negative path). Stage 1's hills never
   sum to -128. Applied (2026-11-02): stage 2's road now matches in all 600 loops.
-- **The rows' anchors**: row 20's left anchor is one more than the CPC's in some loops (stage 2: 6 and 6
-  loops, 3: 47 and 19, 4: 3 and 0, 5: 35 and 5; stage 1: 0). Not found yet.
+- **The rows' anchors**: row 20's anchor is one more than the CPC's in some loops (stage 2: 6 and 6 loops, 3:
+  47 and 19, 4: 3 and 0, 5: 35 and 5; stage 1: 0). Found (2026-11-02): it's whichever edge is read from a lane
+  table (the right in stage 3's, not the left as first written), at the lanes' top entry, whose borrow the
+  CPC chains down from leftovers above the road (`cpc-road.md`, Oddities). Stage 1's row 20 reads only the
+  edges. Left (decisions D25).
 - **The bounces**: one each, all on right branches, which run into tunnels soon after the fork (the CPC's
   tunnel patches the object drawer and has walls). Probably the tunnel, not confirmed.
 - In stages 2 and 5 the CPC went more than 50 frames between two loops (the check's limit; 2,000 let them
@@ -147,5 +150,5 @@ the stage by test mode's key '2'), 600 loops each branch:
 2. The airborne patrol: done (`airborne.6502`; its images kept once for both stages, both frames, D21).
 3. The gantry (3 and 5): done (`objects.6502`'s gantry_beam).
 4. The ram's score by stage: done.
-5. The `road_lines` fix for C = -128: done. The row 20 anchor: to do.
+5. The `road_lines` fix for C = -128: done. The row 20 anchor: found, left (decisions D25).
 6. Shared with stage 1: the tunnel (renderer, mouth, walls, sound): done.

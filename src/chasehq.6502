@@ -40,6 +40,14 @@ ENDSECTION
 SECTION StagesFile, filename = "CHASEL", load = &FFFF0000+BankLoad
     SECTION SwramStages, org = SwramOrg, guard = SwramEnd, transform = "zx02"
         INCLUDE "stages.6502"           ; the stages, packed
+
+        \\ the stage intro, an overlay run from RoadWindow and the edge tables (D26): intro_run unpacks it
+
+.IntroPack
+        SECTION IntroCode, org = RoadWindow, guard = RoadWindow + &400, transform = "zx02"
+            INCLUDE "intro.6502"
+        ENDSECTION
+        ASSERT EdgeRLo == RoadWindow + &100 AND EdgeLLo == RoadWindow + &200 AND EdgeR2Hi + &80 == RoadWindow + &400, "the overlay's pages: RoadWindow and the edge tables"
     ENDSECTION
 ENDSECTION
 

@@ -1,0 +1,384 @@
+\\ intro.6502 - the stage intro (the CPC's &04E5, docs/cpc-logic.md): an overlay (decisions D26), kept packed in
+\\ the stages' bank and unpacked at each stage's start over RoadWindow and the edge tables, which road_start
+\\ clears after it. It runs from there with the code's bank paged in, as the game loop does.
+
+SECTION GameVars
+.IntroBars                              ; the two bars' levels, 0-7 (the CPC's &053F, &055C: never reset)
+    SKIP 2
+ENDSECTION
+
+IntroCarCol = 27                        ; the car's place (the CPC's &84DB, its bottom line), its most lines
+IntroCarBottom = 88
+IntroCarMost = 49
+IntroBarCells = 7                       ; the bars (&83EE, &A4AE): 7 cells of 2 bytes, on 2 lines each
+IntroBarCol = 46
+IntroBarLine1 = 56
+IntroBarLine2 = 84
+IntroLightsCol = 8                      ; the lights (&0658: x 32 in quarter-bytes, bottom lines 64 and 96)
+IntroLights1 = 64 - (IntroLightsH - 1)
+IntroLights2 = 96 - (IntroLightsH - 1)
+ASSERT IntroBarLine1 MOD 2 == 0 AND IntroBarLine2 MOD 2 == 0, "the bars start on even lines"
+ASSERT IntroBarCol >= 32 AND IntroBarCol + 2 * IntroBarCells <= 64, "the bars in a row's second page"
+ASSERT (IntroLightsCol + IntroLightsW) * 8 <= 256, "the lights in a row's first page"
+
+\\ The intro: dissolved in, the briefing asked for, then a loop (the CPC's &04FE) drawing the playfield whole
+\\ into the back one: its frame and the lights, the title, the message window's loop, the bars, the car (not in
+\\ stage 5), the dissolve's step; each playfield shown IntroPace frames at least. It ends when the window's
+\\ closed and the dissolve out (started as it closes) is done; or at once with gear while the briefing's opening
+\\ or printing, the window closed there and then (the CPC's &1E20), and phrase 5.
+\\
+\\ Inputs:
+\\     Stage, the stage's data in place (stage_load)
+\\     back
+\\
+\\ Outputs:
+\\     the playfields; the window's state; IntroBars
+\\     A, X, Y: corrupted
+
+IntroPace = 3                           ; frames a loop at least (decisions D27)
+
+.intro
+{
+    ZA_AUTO1 shown                      ; local: irqframes when the last playfield went up
+
+    LDA #&80:JSR dissolve_start         ; (in: the CPC's A = &F0)
+    LDX #LO(MsgBriefing):LDY #HI(MsgBriefing)
+    LDA #255:JSR msg_request            ; (textstate.6502's MESSAGE, which comes after this)
+.loop
+    JSR wait_back                       ; (the last playfield taken at the panel's top after irqframes' last
+    LDA irqframes:STA shown             ; step, so it went up in this frame)
+    JSR intro_frame
+    LDX #LO(PageIntro):LDY #HI(PageIntro)
+    JSR page_request                    ; (the title: asked for each loop, as the CPC draws it each loop)
+    JSR page_draw
+    JSR msg_update
+    JSR intro_bars
+    JSR intro_car
+    JSR dissolve_step
+.pace
+    LDA irqframes:SEC:SBC shown         ; (shown again IntroPace frames after the last: asked for from the
+    CMP #IntroPace:BCC pace             ; playfield's end, taken at the panel's top after it)
+    JSR show
+    LDA DissolveLeft:BNE loop           ; (a dissolve running)
+    LDA MsgState:BEQ done               ; (closed: the end)
+    BMI closing
+    JSR read_keys:AND #KeyGear:BEQ loop
+    LDA #MsgClosing:STA MsgState        ; (gear: the window closed there and then)
+    LDA bankstore:STA &FE30             ; ROMSEL: the store's
+    JSR msg_static
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+    LDA #5:JMP speak                    ; (then the stage)
+.closing
+    LDA #0:JSR dissolve_start           ; (out: the CPC's A = &10)
+    BNE loop                            ; always (Z clear: its loops)
+    ZA_UNREACHABLE
+.done
+    RTS
+}
+
+\\ The playfield's frame (the CPC's &05E9), a row at a time: each line by the row runner, the fill's byte for
+\\ its parity (the top's or the bottom's on the playfield's first and last two lines), then the uprights over
+\\ it, columns 0 and 63 and in the car's box's rows 23 and 42; then the box's top and bottom over those, from
+\\ column 23 to 42. None of the CPC's edges overlaps another, so only the fill must come first. Then the lights.
+\\
+\\ Inputs:
+\\     back
+\\
+\\ Outputs:
+\\     the back playfield
+\\     A, X, Y: corrupted
+
+IntroBoxTop = 40                        ; the box's top and bottom lines (its uprights' rows between)
+IntroBoxBottom = 102
+IntroBoxLeft = 23                       ; its uprights' columns
+IntroBoxRight = 42
+ASSERT IntroBoxTop MOD 8 == 0 AND IntroBoxBottom MOD 8 == 6, "the box's top and bottom: a row's first, last two lines"
+ASSERT IntroBoxLeft < 32 AND IntroBoxRight >= 32, "the box's uprights in a row's first and second pages"
+
+.IntroFills                             ; each line's bytes by Y: a row's first two lines the top's (Y from 0),
+    EQUB IntroTop0, IntroTop1           ; the middle rows' (from 2), its last two the bottom's (from 4)
+    EQUB IntroFill0, IntroFill1, IntroFill0, IntroFill1, IntroFill0, IntroFill1, IntroFill0, IntroFill1
+    EQUB IntroBottom0, IntroBottom1
+.IntroLefts                             ; and over columns 0 and 23
+    EQUB IntroTop0, IntroTop1
+    EQUB IntroLeft0, IntroLeft1, IntroLeft0, IntroLeft1, IntroLeft0, IntroLeft1, IntroLeft0, IntroLeft1
+    EQUB IntroBottom0, IntroBottom1
+.IntroRights                            ; and over 63 and 42
+    EQUB IntroTop0, IntroTop1
+    EQUB IntroRight0, IntroRight1, IntroRight0, IntroRight1, IntroRight0, IntroRight1, IntroRight0, IntroRight1
+    EQUB IntroBottom0, IntroBottom1
+
+.intro_frame
+{
+    ZA_AUTO1 line                       ; local: the row's first line
+
+    LDA #0
+.row
+    STA line
+    JSR runner_row                      ; A: the row's second page (X, Y kept)
+    STA right+2:STA boxright+2
+    EOR #1:STA left+2:STA boxleft+2     ; (its first)
+    LDX #0:LDY #(63 - 32) * 8           ; (not the box's rows: columns 0 and 63 again)
+    LDA line:SEC:SBC #IntroBoxTop:CMP #IntroBoxBottom + 2 - IntroBoxTop:BCS @+
+    LDX #IntroBoxLeft * 8:LDY #(IntroBoxRight - 32) * 8
+.@
+    STX boxleft+1:STY boxright+1
+    LDY #2                              ; Y: the line's bytes in IntroFills and the rest, the middle rows'
+    LDA line:BNE @+
+    LDY #0                              ; (the top row's)
+.@
+    CMP #PlayRows * 8 - 8:BNE @+
+    LDY #4                              ; (the bottom row's)
+.@
+    LDX #0                              ; X: the line in its row
+.lines
+    LDA IntroFills,Y:JSR Runner         ; (its 64 columns)
+    LDA IntroLefts,Y
+.left
+    STA &FF00,X                         ; self-modified: the row's first page (column 0)
+.boxleft
+    STA &FF00,X                         ; self-modified: and its column 23 in the box's rows (else 0)
+    LDA IntroRights,Y
+.right
+    STA &FFF8,X                         ; self-modified: the row's second page (column 63)
+.boxright
+    STA &FFF8,X                         ; self-modified: and its column 42 in the box's rows (else 63)
+    INY:INX:CPX #8:BNE lines
+    SAME_PAGE lines
+
+    LDA line
+    LDX #0:LDY #0:CMP #IntroBoxTop:BEQ band ; (the box's top: X its first line in the row, Y its bytes)
+    LDX #IntroBoxBottom AND 7:LDY #4 + (IntroBoxBottom AND 7)  ; (its bottom: as the bottom row's)
+    CMP #IntroBoxBottom AND &F8:BEQ band
+.banded
+    LDA line:CLC:ADC #8:BPL row
+    LDA #IntroLights1:JSR intro_lights
+    LDA #IntroLights2:JMP intro_lights
+
+    \\ the box's top or bottom: its row's first two lines or last two, from column 23 to 42
+
+.band
+    LDA #&60:STA RunnerPage + LO(Runner) + 3 * (IntroBoxRight + 1)  ; (RTS: past column 42)
+    LDA IntroFills,Y:JSR Runner + 3 * IntroBoxLeft
+    INX:INY
+    LDA IntroFills,Y:JSR Runner + 3 * IntroBoxLeft
+    LDA #&9D:STA RunnerPage + LO(Runner) + 3 * (IntroBoxRight + 1)  ; (STA abs,X back)
+    BNE banded                          ; always
+    ZA_UNREACHABLE
+}
+
+\\ The lights (&2860 with the CPC's &E6E0): copied whole, a line at a time across its columns.
+\\
+\\ Inputs:
+\\     A: its top line
+\\     back
+\\
+\\ Outputs:
+\\     the back playfield
+\\     A, X, Y: corrupted
+
+.intro_lights
+{
+    ZA_AUTO2 at                         ; local: the line's first byte, at the lights' first column
+    ZA_AUTO1 line                       ; local: the line
+
+    STA line
+    LDX #0                              ; X: the image's line
+.next
+    LDA line:AND #7:ORA #IntroLightsCol * 8:STA at
+    LDA line:LSR A:LSR A:AND #&FE:ORA back:STA at+1
+    FOR c = 0..IntroLightsW - 1
+        LDY #c * 8
+        LDA IntroLights + c * IntroLightsH,X:STA (at),Y
+    NEXT
+    INC line
+    INX:CPX #IntroLightsH:BNE next
+    RTS
+}
+
+\\ The bars (the CPC's &053A): each a random step, up with bit 7 clear and down with it set, held to 0-7; then
+\\ drawn, its level's cells lit and the rest dim, 2 bytes a cell on its two lines.
+\\
+\\ Inputs:
+\\     IntroBars, Rng
+\\     back
+\\
+\\ Outputs:
+\\     IntroBars, Rng; the back playfield
+\\     A, X, Y: corrupted
+
+.IntroBarLo                             ; each bar's first byte: its even line, in its row's second page
+    EQUB (IntroBarCol - 32) * 8 + (IntroBarLine1 AND 7), (IntroBarCol - 32) * 8 + (IntroBarLine2 AND 7)
+.IntroBarHi
+    EQUB (IntroBarLine1 DIV 8) * 2 + 1, (IntroBarLine2 DIV 8) * 2 + 1
+.IntroCells                             ; a cell's bytes: its left on even and odd lines, its right the same
+    EQUB IntroLitA0, IntroLitA1, IntroLitB0, IntroLitB1 ; (lit)
+    EQUB IntroDimA0, IntroDimA1, IntroDimB0, IntroDimB1 ; (dim)
+
+.intro_bars
+{
+    ZA_AUTO2 at                         ; local: the bar's first byte
+    ZA_AUTO1 lit, bar                   ; local: its cells left to light (negative once none); the bar
+
+    LDX #0
+.next
+    STX bar
+    JSR random                          ; (X kept)
+    ASL A:LDA IntroBars,X:BCS down
+    CMP #7:BCS stepped
+    INC IntroBars,X
+    BCC stepped                         ; always
+.down
+    BEQ stepped                         ; (0 stays)
+    DEC IntroBars,X
+.stepped
+    LDA IntroBars,X:STA lit
+    LDA IntroBarLo,X:STA at
+    LDA IntroBarHi,X:ORA back:STA at+1
+    LDY #0                              ; Y: the cell's first byte, 16 a cell
+.cell
+    LDX #4                              ; (dim)
+    DEC lit:BMI drawn                   ; (none left to light)
+    LDX #0                              ; (lit)
+.drawn
+    LDA IntroCells,X:STA (at),Y         ; its left, even line
+    INY:LDA IntroCells+1,X:STA (at),Y   ; and odd
+    TYA:ORA #8:TAY
+    LDA IntroCells+3,X:STA (at),Y       ; its right, odd line
+    DEY:LDA IntroCells+2,X:STA (at),Y   ; and even
+    TYA:CLC:ADC #8:TAY                  ; (the next cell's)
+    CPY #16 * IntroBarCells:BNE cell
+    LDX bar:INX
+    CPX #2:BNE next
+    RTS
+}
+
+\\ The car revealed (the CPC's &05A0): the criminal's biggest, its bottom lines, one more each loop to 49 (or
+\\ its height); none in stage 5.
+\\
+\\ Inputs:
+\\     IntroCarLines, Stage, CarSprite
+\\     back
+\\
+\\ Outputs:
+\\     IntroCarLines; the back playfield
+\\     A, X, Y: corrupted
+
+.intro_car
+{
+    LDA Stage:CMP #5:BEQ none
+    LDA IntroCarLines:CMP #IntroCarMost:BCS @+
+    ADC #1:STA IntroCarLines            ; (C clear)
+.@
+    LDX bankdata:STX &FE30              ; ROMSEL: the data's bank
+    LDY CarSprite                       ; (the criminal's, its biggest)
+    CMP SprH,Y:BCC @+                   ; (A: the car's lines)
+    LDA SprH,Y
+.@
+    STA sprite_draw.lines
+    LDA #0:STA sprite_draw.skip
+    LDA #IntroCarCol:STA sprite_draw.col
+    LDA #IntroCarBottom:STA sprite_draw.bottom
+    TYA:JSR sprite_draw
+    LDA bankcode:STA &FE30              ; ROMSEL: the code's back
+.none
+    RTS
+}
+
+\\ Start a dissolve (the CPC's &1337): its pattern 1-3 by a random number (AND 3, 0 taken as 1: the tables have
+\\ it twice), out or in.
+\\
+\\ Inputs:
+\\     A: bit 7 set for in
+\\     Rng
+\\
+\\ Outputs:
+\\     the dissolve's state, Rng
+\\     A, X: corrupted; Z clear (DissolveLeft's load: 7 or 8)
+
+.dissolve_start
+{
+    STA DissolveIn
+    JSR random
+    AND #3
+    BIT DissolveIn:BPL @+
+    ORA #4                              ; (in: from 4)
+.@
+    TAX                                 ; 0-7
+    LDA DissolveFirst,X:STA DissolveMask
+    LDA DissolveCount,X:STA DissolveLeft
+    RTS
+}
+
+\\ A dissolve's step (the CPC's &12CF with &1766 = 2): the back playfield ANDed with its mask, 16 bytes for a
+\\ pair of cells repeated over it; then on to the next mask, but before the last loop.
+\\
+\\ Inputs:
+\\     the dissolve's state
+\\     back
+\\
+\\ Outputs:
+\\     the back playfield, the dissolve's state
+\\     A, X, Y: corrupted
+
+.dissolve_step
+{
+    ZA_AUTO2 at                         ; local: the playfield's page
+    ZA_AUTO1 from, codes, c             ; local: the mask's next packed byte; its codes left; a code
+
+    LDA DissolveLeft:BNE @+
+    RTS                                 ; (none)
+.@
+    LDA DissolveMask:ASL A:ASL A:STA from   ; (4 bytes a mask)
+    LDX #0                              ; X: the AND's operand, 7 bytes apart
+.byte
+    LDY from:LDA DissolveMasks,Y:STA codes
+    INC from
+    LDY #4
+.code
+    LDA codes:AND #3:STA c
+    ASL A:ASL A:ORA c:STA c             ; c OR c << 2
+    ASL A:ASL A:ASL A:ASL A:ORA c       ; and that << 4: c x &55
+    STA ands+3,X                        ; (the operand)
+    LSR codes:LSR codes
+    TXA:CLC:ADC #7:TAX
+    DEY:BNE code
+    CPX #16 * 7:BNE byte
+    LDA #0:STA at
+    LDA back:STA at+1
+    LDX #HI(PlayBytes)
+.page
+    LDY #0
+.ands
+    FOR k = 0..15
+        LDA (at),Y:AND #&FF:STA (at),Y  ; self-modified: the mask's byte k
+        INY
+    NEXT
+    BNE ands
+    INC at+1
+    DEX:BNE page
+    DEC DissolveLeft:BEQ done
+    LDA DissolveLeft:LSR A:BEQ done     ; (1 left, the last loop: the same mask again)
+    BIT DissolveIn:BMI in
+    INC DissolveMask
+    RTS
+.in
+    DEC DissolveMask
+.done
+    RTS
+}
+
+\\ The overlay's own state
+
+.IntroCarLines                          ; the car's lines drawn (0 from the unpack at each stage's start)
+    EQUB 0
+.DissolveIn                             ; bit 7 set for in
+    SKIP 1
+.DissolveMask                           ; the next mask
+    SKIP 1
+.DissolveLeft                           ; loops left (0 none)
+    SKIP 1
+
+    INPAGE DissolveFirst - DissolveMasks    ; (the masks read in a page)
+    INCLUDE "../build/gen/dissolve.6502"    ; the masks (tools/gentext.py)
+    INCLUDE "../build/gen/intro.6502"       ; the colours and the lights
